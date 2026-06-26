@@ -1,7 +1,8 @@
 import {useState} from "react"
 import {useNavigate} from "react-router-dom"
 import axios from "axios"
-
+import api from "../api/client"
+// replace all axios.post calls with api.post — same signature
 export default function TaskIntake() {
     const [instructions, setInstructions] = useState("")
     const [files, setFiles] = useState<File[]>([])
@@ -14,7 +15,7 @@ export default function TaskIntake() {
         form.append("instructions", instructions)
         files.forEach(f => form.append("files", f))
 
-        const {data} = await axios.post("http://localhost:8000/api/run", form)
+        const {data} = await api.post("http://localhost:8000/api/run", form)
         navigate(`/dashboard/${data.task_id}`)
     }
 
