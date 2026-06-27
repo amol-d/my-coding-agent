@@ -120,7 +120,7 @@ async def safe_send(task_id: str, event: str, data: dict):
             pass
 
 
-def _collect_stream(input_data, config: dict) -> tuple[list, bool, dict]:
+def _collect_stream(input_data, config: dict) -> tuple[list, bool, dict, str | None]:
     """Run LangGraph stream to completion. Never break early — that raises GeneratorExit."""
     results = []
     interrupted = False
@@ -131,7 +131,8 @@ def _collect_stream(input_data, config: dict) -> tuple[list, bool, dict]:
         node_name = next(iter(chunk))
         results.append((node_name, chunk[node_name]))
     snapshot = pipeline.get_state(config)
-    return results, interrupted, snapshot.values
+    interrupt_node = snapshot.next[0] if snapshot.next else None
+    return results, interrupted, snapshot.values, interrupt_node
 
 
 async def run_pipeline(task_id: str, initial_state: dict):
@@ -139,7 +140,7 @@ async def run_pipeline(task_id: str, initial_state: dict):
     loop = asyncio.get_event_loop()
 
     try:
-        results, interrupted, state = await loop.run_in_executor(
+        results, interrupted, state, interrupt_node = await loop.run_in_executor(
             executor, _collect_stream, initial_state, config
         )
 
@@ -151,7 +152,7 @@ async def run_pipeline(task_id: str, initial_state: dict):
 
         if interrupted:
             await safe_send(task_id, "hitl_required", {
-                "node": results[-1][0] if results else "hitl",
+                "node": interrupt_node or (results[-1][0] if results else "hitl"),
                 "stage": state.get("current_stage", ""),
                 "payload": state,
             })
@@ -182,7 +183,7 @@ async def run_pipeline_resume(task_id: str, decision: dict):
         resume_value["edited_code"] = decision["edited_code"]
 
     try:
-        results, interrupted, state = await loop.run_in_executor(
+        results, interrupted, state, interrupt_node = await loop.run_in_executor(
             executor, _collect_stream, Command(resume=resume_value), config
         )
 
@@ -194,7 +195,7 @@ async def run_pipeline_resume(task_id: str, decision: dict):
 
         if interrupted:
             await safe_send(task_id, "hitl_required", {
-                "node": results[-1][0] if results else "hitl",
+                "node": interrupt_node or (results[-1][0] if results else "hitl"),
                 "stage": state.get("current_stage", ""),
                 "payload": state,
             })
