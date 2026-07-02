@@ -109,3 +109,7 @@ code {
     padding: 4px 8px;
     background: var(--code-bg);
 }
+
+/* Spinner for in-progress pipeline stages (Dashboard stepper) */
+@keyframes ccd-spin { to { transform: rotate(360deg); } }
+.spin { animation: ccd-spin 0.9s linear infinite; display: inline-block; }
