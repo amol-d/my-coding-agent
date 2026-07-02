@@ -20,8 +20,12 @@ agents, plus a React/Vite frontend for driving runs and approving checkpoints.
 
 ### Pipeline (LangGraph)
 
-Defined in [`graph.py`](graph.py). State flows through nodes; `MemorySaver` checkpoints
-each `thread_id` (= `task_id`) so runs can pause at HITL interrupts and resume.
+Defined in [`graph.py`](graph.py). State flows through nodes; a **persistent
+`SqliteSaver`** checkpoints each `thread_id` (= `task_id`) so runs can pause at HITL
+interrupts and resume — and, because the store is a file (`checkpoints.sqlite`, override
+with `CHECKPOINT_DB_PATH`), **a paused run survives a backend restart or crash** and can
+still be resumed. The connection is opened with `check_same_thread=False` since the graph
+is streamed from a `ThreadPoolExecutor`.
 
 ```
 ingest → plan → hitl_plan ─approved→ coding → review → hitl_code ─approved→ testing → hitl_tests
@@ -134,6 +138,7 @@ Loaded via `python-dotenv` (`load_dotenv()` is called at the top of most modules
 | `LOCAL_REPO_PATH` | **Absolute path to the target repo the agent edits** |
 | `DEFAULT_BRANCH` | Base branch in the target repo for new branches / PRs |
 | `DEPLOY_COMMAND` | Optional shell command run by the deploy node (else no-op) |
+| `CHECKPOINT_DB_PATH` | SQLite file for the persistent checkpointer (default `checkpoints.sqlite`) |
 | `GITHUB_TOKEN` | PAT with `repo` scope, used to open PRs |
 | `GITHUB_REPO` | `owner/repo` of the target repo on GitHub |
 | `JWT_SECRET` | Signing secret for auth tokens |

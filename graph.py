@@ -1,10 +1,12 @@
+import os
+import sqlite3
 from typing import TypedDict, Optional, List
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import StateGraph, END
 from agents.ingest import ingest_agent
 from agents.planning import planning_agent
@@ -130,7 +132,23 @@ def route_after_deploy_gate(state: dict) -> str:
     return "deploy" if decision in ("approved", "override") else "end"
 
 
-memory = MemorySaver()
+# Persistent checkpointer: runs and their HITL interrupt state survive a backend
+# restart or crash, so a paused run can still be resumed. Falls back to a file in
+# the working dir; override with CHECKPOINT_DB_PATH.
+CHECKPOINT_DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "checkpoints.sqlite")
+
+
+def _build_checkpointer() -> SqliteSaver:
+    # check_same_thread=False: the graph is streamed from a ThreadPoolExecutor, so
+    # the connection is used by worker threads other than the one that opened it.
+    conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")   # better concurrent read/write
+    saver = SqliteSaver(conn)
+    saver.setup()                               # create checkpoint tables if absent
+    return saver
+
+
+memory = _build_checkpointer()
 
 
 def build_graph():
