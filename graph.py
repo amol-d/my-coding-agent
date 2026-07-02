@@ -15,7 +15,7 @@ from agents.commit import commit_agent
 from agents.pr_manager import pr_agent
 from agents.deploy import deploy_agent
 from hitl.checkpoints import (
-    hitl_plan_review, hitl_code_review, hitl_test_review,
+    hitl_git_ops_gate, hitl_plan_review, hitl_code_review, hitl_test_review,
     hitl_commit_gate, hitl_deploy_gate,
 )
 
@@ -30,6 +30,9 @@ class PipelineState(TypedDict, total=False):
     design_inputs: List[dict]      # parsed docs/images: {name, kind, text}
     figma_links: List[str]
     options: dict                  # {create_pr: bool, deploy: bool}
+    intent_type: str               # code_change | git_ops | mixed
+    create_new_branch: bool        # honor "don't create a new branch"
+    base_branch: Optional[str]     # target branch for a PR, from NL ("PR to dev")
     arch_context: str
     clarified_spec: str
     implementation_plan: str
@@ -51,6 +54,20 @@ class PipelineState(TypedDict, total=False):
 
 
 # ── Routing ───────────────────────────────────────────────────────────────────
+
+def route_after_ingest(state: dict) -> str:
+    if state.get("error"):
+        return "abort"
+    # a pure git operation skips code generation and goes straight to the ops gate
+    return "git_ops" if state.get("intent_type") == "git_ops" else "plan"
+
+
+def route_after_git_ops(state: dict) -> str:
+    if state.get("error"):
+        return "end"
+    decision = state.get("hitl_decisions", {}).get("git_ops", "approved")
+    return "pr" if decision in ("approved", "override") else "end"
+
 
 def route_after_plan(state: dict) -> str:
     if state.get("error"):
@@ -121,6 +138,7 @@ def build_graph():
 
     # nodes
     builder.add_node("ingest", ingest_agent)
+    builder.add_node("hitl_git_ops", hitl_git_ops_gate)
     builder.add_node("plan", planning_agent)
     builder.add_node("hitl_plan", hitl_plan_review)
     builder.add_node("coding", coding_agent)
@@ -134,9 +152,18 @@ def build_graph():
     builder.add_node("hitl_deploy", hitl_deploy_gate)
     builder.add_node("deploy", deploy_agent)
 
-    # spec → plan → human gate
+    # ingest classifies intent: pure git-ops skips codegen, everything else plans
     builder.set_entry_point("ingest")
-    builder.add_edge("ingest", "plan")
+    builder.add_conditional_edges("ingest", route_after_ingest, {
+        "git_ops": "hitl_git_ops",
+        "plan": "plan",
+        "abort": END,
+    })
+    # git-ops fast path: confirm, then push (+ optional PR) via pr_manager
+    builder.add_conditional_edges("hitl_git_ops", route_after_git_ops, {
+        "pr": "pr_manager",
+        "end": END,
+    })
     builder.add_edge("plan", "hitl_plan")
     builder.add_conditional_edges("hitl_plan", route_after_plan, {
         "coding": "coding",

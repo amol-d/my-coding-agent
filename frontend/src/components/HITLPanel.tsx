@@ -17,6 +17,7 @@ type Props = {
 // Keyed by the interrupt node name (event.node), which the backend sets
 // reliably from snapshot.next — current_stage collides across checkpoints.
 const NODE_LABELS: Record<string, string> = {
+    hitl_git_ops: "Confirm the requested git operation",
     hitl_plan: "Review the implementation plan before coding",
     hitl_code: "Review generated code before testing",
     hitl_tests: "Tests ran — approve to proceed",
@@ -25,6 +26,7 @@ const NODE_LABELS: Record<string, string> = {
 }
 
 const CHECKPOINT_MAP: Record<string, string> = {
+    hitl_git_ops: "git_ops",
     hitl_plan: "plan",
     hitl_code: "code_review",
     hitl_tests: "test_review",
@@ -44,6 +46,18 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
     const implementationPlan: string = payload.implementation_plan || ""
     const writtenFiles: string[] = payload.written_files || []
     const branchName: string = payload.branch_name || ""
+
+    // test-result presentation (status added by the backend testing agent)
+    const testStatus: string = testResults.status
+    const testsRan = testResults.ran !== false && (testStatus === "passed" || testStatus === "failed")
+    const testTone = testStatus === "failed" ? "danger" : testsRan ? "success" : "warning"
+    const testHeadline =
+        testStatus === "passed" ? "✅ All tests passed"
+        : testStatus === "failed" ? "❌ Tests failed"
+        : testStatus === "no_tests" ? "➖ No tests were collected"
+        : testStatus === "runner_unavailable" ? "⚠️ Test runner unavailable — tests not run"
+        : testResults.passed ? "✅ All tests passed"
+        : "⚠️ Tests skipped — no runner for the generated tests"
 
     const fileNames = Object.keys(generatedCode)
     const [selectedFile, setSelectedFile] = useState<string>(fileNames[0] || "")
@@ -97,6 +111,48 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
             </div>
 
             <div style={{padding: "1.25rem", background: "var(--surface-2)"}}>
+
+                {/* ── GIT OPERATION ── */}
+                {node === "hitl_git_ops" && (
+                    <div style={{marginBottom: "1.25rem"}}>
+                        <div style={{fontSize: 13, fontWeight: 500, marginBottom: 8, color: "var(--text-secondary)"}}>
+                            The agent understood this as a git operation (no code will be generated)
+                        </div>
+                        <div style={{
+                            padding: "0.875rem", borderRadius: "var(--radius)",
+                            background: "var(--surface-1)", border: "0.5px solid var(--border)",
+                            fontSize: 13, lineHeight: 1.7
+                        }}>
+                            <div>
+                                <i className="ti ti-git-branch" aria-hidden style={{marginRight: 6}}/>
+                                Push branch:{" "}
+                                <span style={{fontFamily: "var(--font-mono)"}}>
+                                    {payload.branch_name || "(current branch)"}
+                                </span>
+                            </div>
+                            <div>
+                                <i className="ti ti-git-pull-request" aria-hidden style={{marginRight: 6}}/>
+                                Open pull request: <strong>{payload.create_pr ? "yes" : "no"}</strong>
+                            </div>
+                            {payload.create_pr && (
+                                <div>
+                                    <i className="ti ti-target" aria-hidden style={{marginRight: 6}}/>
+                                    Target (base) branch:{" "}
+                                    <span style={{fontFamily: "var(--font-mono)"}}>
+                                        {payload.base_branch || "(default branch)"}
+                                    </span>
+                                </div>
+                            )}
+                            <div>
+                                <i className="ti ti-rocket" aria-hidden style={{marginRight: 6}}/>
+                                Deploy: <strong>{payload.deploy ? "yes" : "no"}</strong>
+                            </div>
+                        </div>
+                        <div style={{fontSize: 12, color: "var(--text-muted)", marginTop: 6}}>
+                            Approve to run it, or Abort to cancel.
+                        </div>
+                    </div>
+                )}
 
                 {/* ── IMPLEMENTATION PLAN ── */}
                 {node === "hitl_plan" && (
@@ -346,29 +402,19 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                 )}
 
                 {/* ── TEST RESULTS ── */}
-                {node === "hitl_tests" && (() => {
-                    const st = testResults.status
-                    const ran = testResults.ran !== false && (st === "passed" || st === "failed")
-                    const tone = st === "failed" ? "danger" : ran ? "success" : "warning"
-                    const headline =
-                        st === "passed" ? "✅ All tests passed"
-                        : st === "failed" ? "❌ Tests failed"
-                        : st === "no_tests" ? "➖ No tests were collected"
-                        : st === "runner_unavailable" ? "⚠️ Test runner unavailable — tests not run"
-                        : "⚠️ Tests skipped — no runner for the generated tests"
-                    return (
+                {node === "hitl_tests" && (
                     <div style={{marginBottom: "1.25rem"}}>
                         <div style={{
                             padding: "0.875rem",
                             borderRadius: "var(--radius)",
-                            background: `var(--bg-${tone})`,
-                            borderLeft: `3px solid var(--border-${tone})`
+                            background: `var(--bg-${testTone})`,
+                            borderLeft: `3px solid var(--border-${testTone})`
                         }}>
                             <div style={{
                                 fontSize: 13, fontWeight: 500, marginBottom: 4,
-                                color: `var(--text-${tone})`
+                                color: `var(--text-${testTone})`
                             }}>
-                                {headline}
+                                {testHeadline}
                             </div>
 
                             {/* test command used */}
@@ -413,8 +459,7 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
               </pre>
                         </div>
                     </div>
-                    )
-                })()}
+                )}
 
                 {/* ── PR LINK ── */}
                 {node === "hitl_deploy" && payload.pr_url && (
@@ -471,7 +516,8 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                         <i className="ti ti-check" aria-hidden style={{marginRight: 6}}/>
                         {node === "hitl_commit" ? "Approve — commit"
                             : node === "hitl_deploy" ? "Approve — deploy"
-                                : "Approve"}
+                                : node === "hitl_git_ops" ? "Approve — run it"
+                                    : "Approve"}
                     </button>
 
                     <button
@@ -483,10 +529,10 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                             border: "0.5px solid var(--border-danger)"
                         }}
                     >
-                        <i className={`ti ${node === "hitl_commit" || node === "hitl_deploy" ? "ti-x" : "ti-refresh"}`}
+                        <i className={`ti ${["hitl_commit", "hitl_deploy", "hitl_git_ops"].includes(node) ? "ti-x" : "ti-refresh"}`}
                            aria-hidden style={{marginRight: 6}}/>
                         {node === "hitl_plan" ? "Request changes"
-                            : node === "hitl_commit" || node === "hitl_deploy" ? "Abort"
+                            : ["hitl_commit", "hitl_deploy", "hitl_git_ops"].includes(node) ? "Abort"
                                 : "Reject — retry"}
                     </button>
 

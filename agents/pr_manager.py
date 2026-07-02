@@ -169,26 +169,24 @@ load_dotenv()
 from github import Github, GithubException
 import os
 from events import emit
-from tools.local_repo import git_push
+from tools.local_repo import git_push, git_current_branch
 
 STAGE = "pr_manager"
 
 
 def pr_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
-    emit(task_id, "stage_started", action="Pushing branch and opening PR", node=STAGE)
+    want_pr = bool((state.get("options", {}) or {}).get("create_pr"))
+    emit(task_id, "stage_started",
+         action="Pushing branch and opening PR" if want_pr else "Pushing branch",
+         node=STAGE)
 
-    token = os.environ.get("GITHUB_TOKEN")
-    repo_name = os.environ.get("GITHUB_REPO")
-
-    if not token or not repo_name:
-        emit(task_id, "error", message="GITHUB_TOKEN or GITHUB_REPO not set", node=STAGE)
-        return {"error": "GITHUB_TOKEN or GITHUB_REPO not set", "current_stage": "error"}
-
-    branch_name = state.get("branch_name")
+    # branch_name is set by the coding node; for a pure git-ops request there is
+    # no coding step, so fall back to the repo's current branch.
+    branch_name = state.get("branch_name") or git_current_branch()
     if not branch_name:
-        emit(task_id, "error", message="No branch_name in state", node=STAGE)
-        return {"error": "No branch_name in state", "current_stage": "error"}
+        emit(task_id, "error", message="Could not determine branch to push", node=STAGE)
+        return {"error": "Could not determine branch to push", "current_stage": "error"}
 
     clarified_spec = (
             state.get("clarified_spec")
@@ -199,12 +197,23 @@ def pr_agent(state: dict) -> dict:
     test_results = state.get("test_results", {"passed": False, "output": ""})
     written_files = state.get("written_files", [])
 
-    # the commit already happened in the commit node — just push the branch
+    # push the branch (commit, if any, already happened in the commit node)
     emit(task_id, "stage_progress", action=f"Pushing {branch_name} to origin", node=STAGE)
     ok, msg = git_push(branch_name)
     if not ok:
         emit(task_id, "error", message=f"Push failed: {msg}", node=STAGE)
         return {"error": f"Push failed: {msg}", "current_stage": "error"}
+
+    # push-only request (no PR asked for) — stop here.
+    if not want_pr:
+        emit(task_id, "node_complete", node=STAGE, action=f"Pushed {branch_name}")
+        return {"current_stage": "pushed"}
+
+    token = os.environ.get("GITHUB_TOKEN")
+    repo_name = os.environ.get("GITHUB_REPO")
+    if not token or not repo_name:
+        emit(task_id, "error", message="GITHUB_TOKEN or GITHUB_REPO not set", node=STAGE)
+        return {"error": "GITHUB_TOKEN or GITHUB_REPO not set", "current_stage": "error"}
 
     # create PR via GitHub API
     g = Github(token)
@@ -213,15 +222,33 @@ def pr_agent(state: dict) -> dict:
     except GithubException as e:
         return {"error": f"Could not access repo: {str(e)}", "current_stage": "error"}
 
+    # Resolve the PR base branch. The user's natural-language target ("open PR to
+    # dev") wins over DEFAULT_BRANCH; master is only a fallback when nothing was
+    # specified. If the user explicitly named a branch that doesn't exist, say so
+    # rather than silently retargeting the PR somewhere else.
+    requested_base = state.get("base_branch")
+    base_branch = requested_base or os.environ.get("DEFAULT_BRANCH", "main")
     try:
-        base_branch = os.environ.get("DEFAULT_BRANCH", "main")
         repo.get_branch(base_branch)          # validate the base branch exists
     except GithubException:
+        if requested_base:
+            msg = f"Base branch '{requested_base}' does not exist on {repo_name}."
+            emit(task_id, "error", message=msg, node=STAGE)
+            return {"error": msg, "current_stage": "error"}
         try:
             repo.get_branch("master")
             base_branch = "master"
         except GithubException as e:
             return {"error": f"Could not find base branch: {str(e)}", "current_stage": "error"}
+
+    # A PR cannot go from a branch into itself — this is the usual cause of
+    # GitHub's "422 base invalid" when pushing the current branch.
+    if branch_name == base_branch:
+        msg = (f"Cannot open a PR from '{branch_name}' into itself — the current "
+               f"branch is the same as the target base branch '{base_branch}'. "
+               f"Specify a different target (e.g. 'open PR to dev').")
+        emit(task_id, "error", message=msg, node=STAGE)
+        return {"error": msg, "current_stage": "error"}
 
     # build PR body
     files_list = "\n".join(f"- `{f}`" for f in written_files)
@@ -242,21 +269,24 @@ def pr_agent(state: dict) -> dict:
     test_files_list = "\n".join(f"- `{f}`" for f in test_files.keys())
 
     pr_body = f"""## Summary
-    {clarified_spec}
-    
-    ## Files changed
-    {files_list}
-    
-    ## Unit tests added
-    {test_files_list or "None"}
-    
-    ## Review notes
-    {comments_summary}
-    
-    ## Test results
-    {test_status}
-    Command: `{test_cmd}`
-        {test_output}"""
+{clarified_spec}
+
+## Files changed
+{files_list or "None"}
+
+## Unit tests added
+{test_files_list or "None"}
+
+## Review notes
+{comments_summary}
+
+## Test results
+{test_status}
+Command: `{test_cmd}`
+
+```
+{test_output}
+```"""
 
     try:
         pr = repo.create_pull(
@@ -266,8 +296,10 @@ def pr_agent(state: dict) -> dict:
             base=base_branch
         )
     except GithubException as e:
-        emit(task_id, "error", message=f"Could not create PR: {str(e)}", node=STAGE)
-        return {"error": f"Could not create PR: {str(e)}", "current_stage": "error"}
+        # GitHub's 422 "base invalid" is opaque; add the concrete head→base context.
+        detail = f"Could not create PR ({branch_name} → {base_branch}): {str(e)}"
+        emit(task_id, "error", message=detail, node=STAGE)
+        return {"error": detail, "current_stage": "error"}
 
     emit(task_id, "node_complete", node=STAGE, action="Pull request created")
     return {

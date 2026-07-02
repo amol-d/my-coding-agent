@@ -87,6 +87,18 @@ def git_current_branch() -> str:
     return out
 
 
+def grep_repo(pattern: str, max_results: int = 50) -> str:
+    """Search tracked files for a pattern via `git grep`. Returns matching
+    `path:line:text` lines (capped), or a short 'no matches' note. Newly created
+    (untracked) files won't appear until committed — that's fine for context."""
+    code, out, err = git_run("grep", "-n", "-I", "-e", pattern)
+    if code == 0 and out:
+        lines = out.splitlines()[:max_results]
+        return "\n".join(lines)
+    # git grep exits 1 when there are no matches; anything else is a real error.
+    return "No matches." if code == 1 else (err or "No matches.")
+
+
 def git_create_branch(branch_name: str) -> tuple[bool, str]:
     code, out, err = git_run("checkout", "-b", branch_name)
     if code != 0:

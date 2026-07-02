@@ -20,6 +20,7 @@ const STAGES: {node: string; label: string; icon: string}[] = [
 ]
 
 const HITL_TO_STAGE: Record<string, string> = {
+    hitl_git_ops: "pr_manager",
     hitl_plan: "plan", hitl_code: "review", hitl_tests: "testing",
     hitl_commit: "commit", hitl_deploy: "deploy",
 }

@@ -35,15 +35,32 @@ ingest → plan → hitl_plan ─approved→ coding → review → hitl_code ─
      └─ else → END
 ```
 
-- **`ingest`** ([`agents/ingest.py`](agents/ingest.py)) — consolidates raw instructions +
-  parsed docs/design-image descriptions + Figma links + RAG arch context into one
-  `clarified_spec`.
+- **`ingest`** ([`agents/ingest.py`](agents/ingest.py)) — first **classifies intent** from
+  the instructions (`code_change` / `git_ops` / `mixed`) and extracts control directives
+  (`create_pr`, `deploy`, `create_new_branch`) that override the UI toggles. Pure
+  `git_ops` requests (e.g. "push the current branch and open a PR") skip code generation
+  and route straight to a confirmation gate + `pr_manager`. Otherwise it consolidates raw
+  instructions + parsed docs/design-image descriptions + Figma links + RAG arch context
+  into one `clarified_spec`.
+- **`hitl_git_ops`** ([`hitl/checkpoints.py`](hitl/checkpoints.py)) — confirmation gate for
+  the git-ops fast path before any push/PR.
 - **`plan`** ([`agents/planning.py`](agents/planning.py)) — produces an
   `implementation_plan` for human review; incorporates feedback on `revise`.
-- **`coding`** ([`agents/coding.py`](agents/coding.py)) — creates/reuses feature branch
-  `agent/<task_id[:8]>`, reads existing repo files, asks the LLM for full file contents
-  (JSON map of path → content), writes them, records `original_code` for diffing. Retries
-  are feedback-aware and bounded by `MAX_CODE_RETRIES`.
+- **`coding`** ([`agents/coding.py`](agents/coding.py)) — an **agentic tool-use loop**
+  (not a single-shot generation). It creates/reuses feature branch `agent/<task_id[:8]>`
+  (or the current branch when `create_new_branch` is false), then lets the model iterate
+  with a small tool set — `list_files` / `read_file` / `grep` (explore),
+  `create_file` / `apply_patch` (edit), `run_command` (verify) — until it calls `finish`
+  or hits `MAX_AGENT_STEPS`. Edits are **targeted search/replace patches**
+  ([`tools/patch.py`](tools/patch.py)) whose `find` must match exactly once, so large
+  files aren't rewritten or truncated. Tools are built per run by
+  [`tools/agent_tools.py`](tools/agent_tools.py); a `Tracker` records each touched file's
+  pre-edit content so the node still returns `generated_code` (path → final content) and
+  `original_code` for diffing — an **unchanged contract**, so `review` / `testing` / HITL
+  gates are unaffected. `run_command` is an **allowlisted, no-shell** subprocess
+  ([`tools/sandbox.py`](tools/sandbox.py)): only build/test/lint/read-only-git binaries,
+  no metacharacters, pinned to the repo. Retries stay feedback-aware and bounded by
+  `MAX_CODE_RETRIES`.
 - **`review`** ([`agents/review.py`](agents/review.py)) — runs linters (`ruff` / `eslint`),
   then LLM structured review comments (`{file, line, severity, comment}`).
 - **`testing`** ([`agents/testing.py`](agents/testing.py)) — generates unit tests, writes

@@ -1,5 +1,105 @@
 [
   {
+    "task_id": "e269612b-0cde-4350-949a-06878f44f0ff",
+    "instructions": "create pr from current branch to dev branch\r\n",
+    "file_names": [],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "complete",
+    "outcome": "done",
+    "pr_url": "https://github.com/amol-d/SSE/pull/3",
+    "commit_sha": null,
+    "error": null,
+    "created_at": "2026-07-02T10:24:56.921131",
+    "updated_at": "2026-07-02T10:25:15.259700"
+  },
+  {
+    "task_id": "697385ea-0dde-47bf-8bc1-05f464c05faf",
+    "instructions": "push current branch to remote and open PR to dev branch",
+    "file_names": [],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "error",
+    "outcome": "spec_ready",
+    "pr_url": null,
+    "commit_sha": null,
+    "error": "Could not create PR: Validation Failed: 422 {\"message\": \"Validation Failed\", \"errors\": [{\"resource\": \"PullRequest\", \"field\": \"base\", \"code\": \"invalid\"}], \"documentation_url\": \"https://docs.github.com/rest/pulls/pulls#create-a-pull-request\", \"status\": \"422\"}",
+    "created_at": "2026-07-02T10:18:36.307419",
+    "updated_at": "2026-07-02T10:19:12.489410"
+  },
+  {
+    "task_id": "4bf51d81-973b-452e-98a5-5cd8cf78914a",
+    "instructions": "Greate do not create new branch now just push current branch to remote and create PR",
+    "file_names": [],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "complete",
+    "outcome": "done",
+    "pr_url": null,
+    "commit_sha": "f5760281bded1a374467ba327f948dfdd7044726",
+    "error": null,
+    "created_at": "2026-07-02T09:41:42.994567",
+    "updated_at": "2026-07-02T09:45:28.375877"
+  },
+  {
+    "task_id": "03d36c2f-e693-4c2e-80d4-3021919a5840",
+    "instructions": "Update the about us page to add below text at the bottom of existing content\r\n\"This is auto generated context from coding agent\"",
+    "file_names": [
+      "ARCHITECTURE.md"
+    ],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "complete",
+    "outcome": "done",
+    "pr_url": null,
+    "commit_sha": "f974eafe95898d99ba723f9a49be5d0b341b94ff",
+    "error": null,
+    "created_at": "2026-07-02T09:37:43.343571",
+    "updated_at": "2026-07-02T09:39:28.782862"
+  },
+  {
+    "task_id": "39fd9f93-82ea-4501-b6c7-47218cf2b357",
+    "instructions": "Architecture file is attached. add it to your knowledge base also.\r\nI want to update the content of about us page to append below text at the bottom of existing text.\r\n\"This is auto-generated text via",
+    "file_names": [
+      "ARCHITECTURE.md"
+    ],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "waiting",
+    "outcome": "plan_ready",
+    "pr_url": null,
+    "commit_sha": null,
+    "error": null,
+    "created_at": "2026-07-02T09:33:18.144634",
+    "updated_at": "2026-07-02T09:33:35.296991"
+  },
+  {
+    "task_id": "526f525d-81cd-4167-9349-f1f9d2da5839",
+    "instructions": "Update about page to add below content at the bottom\r\n\"This is agent generated content\"\"\r\nMake sure the you are updating existing About page. Understand the code base if you need to.",
+    "file_names": [],
+    "options": {
+      "create_pr": false,
+      "deploy": false
+    },
+    "status": "complete",
+    "outcome": "done",
+    "pr_url": null,
+    "commit_sha": "428a700c8ed051f559e6c4546ae821a5f5788e5a",
+    "error": null,
+    "created_at": "2026-07-02T09:21:12.082217",
+    "updated_at": "2026-07-02T09:25:18.371962"
+  },
+  {
     "task_id": "eb20727a-9c56-41c7-b2b5-c6c89a3ab136",
     "instructions": "update AboutUs page to add below content \"This is agent generated content\"",
     "file_names": [],

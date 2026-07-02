@@ -1,6 +1,29 @@
 from langgraph.types import interrupt
 
 
+def hitl_git_ops_gate(state: dict) -> dict:
+    """Confirm an outward-facing git operation (push branch / open PR) that was
+    requested via natural language, before it runs."""
+    opts = state.get("options", {}) or {}
+    decision = interrupt({
+        "checkpoint": "git_ops",
+        "stage": "Confirm the requested git operation",
+        "payload": {
+            "branch_name": state.get("branch_name", ""),
+            "base_branch": state.get("base_branch") or "",
+            "create_pr": opts.get("create_pr", False),
+            "deploy": opts.get("deploy", False),
+            "instructions": state.get("raw_instructions", ""),
+        },
+    })
+    return {
+        "hitl_decisions": {**state.get("hitl_decisions", {}),
+                           "git_ops": decision["action"]},
+        "hitl_feedback": {**state.get("hitl_feedback", {}),
+                          "git_ops": decision.get("feedback", "")},
+    }
+
+
 def hitl_plan_review(state: dict) -> dict:
     """Pause for the human to approve, revise, or add input to the plan."""
     decision = interrupt({
