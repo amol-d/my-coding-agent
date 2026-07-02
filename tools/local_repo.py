@@ -163,8 +163,12 @@ def create_worktree(branch: str, base_branch: str, task_id: str) -> tuple[str | 
     else:
         base = _resolve_base_ref(base_branch)
         if base is None:
-            return None, (f"base branch '{base_branch}' not found "
-                          f"(no local branch and no origin/{base_branch})")
+            # base branch not found — don't block; branch from the repo's current
+            # HEAD so the run can proceed (only fails on a repo with no commits).
+            if not _ref_exists("HEAD"):
+                return None, (f"base branch '{base_branch}' not found and the repo "
+                              f"has no commits to branch from")
+            base = "HEAD"
         code, out, err = _git(REPO_PATH, "worktree", "add", "-b", branch, str(path), base)
     if code != 0:
         return None, err or out

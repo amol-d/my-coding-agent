@@ -60,9 +60,12 @@ def _setup_workspace(state: dict, task_id: str):
         return branch, None, None
 
     branch = state.get("branch_name") or f"agent/{task_id[:8]}"
+    # branch from what the user actually asked for ("from main") when known,
+    # falling back to DEFAULT_BRANCH; create_worktree itself falls back to HEAD.
+    base = state.get("base_branch") or DEFAULT_BRANCH
     emit(task_id, "stage_progress",
-         action=f"Creating isolated worktree on {branch}", node=STAGE)
-    worktree_path, msg = create_worktree(branch, DEFAULT_BRANCH, task_id)
+         action=f"Creating isolated worktree {branch} (from {base})", node=STAGE)
+    worktree_path, msg = create_worktree(branch, base, task_id)
     if worktree_path is None:
         return branch, None, f"Could not create worktree: {msg}"
     set_active_repo(worktree_path)

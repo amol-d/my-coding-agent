@@ -66,12 +66,17 @@ def test_create_worktree_reuses_existing_branch(repo):
     lr.remove_worktree(wt)
 
 
-def test_create_worktree_missing_base_returns_clear_error(repo):
-    wt, msg = lr.create_worktree("agent/x", "nonexistent-base", "taskMissing")
-    assert wt is None
-    assert "not found" in msg          # the true cause, not a masked fallback error
+def test_create_worktree_falls_back_to_head_when_base_missing(repo):
+    # a missing base branch must not block the run — branch from current HEAD
+    wt, msg = lr.create_worktree("agent/x", "nonexistent-base", "taskHead")
+    assert wt is not None, msg
+    assert Path(wt).exists()
+    # the new branch was created at the same commit as main (HEAD)
+    head = _sh(repo, "rev-parse", "HEAD")
+    assert _sh(repo, "rev-parse", "agent/x") == head
+    lr.remove_worktree(wt)
 
 
 def test_resolve_base_ref_prefers_local_then_origin(repo):
     assert lr._resolve_base_ref("main") is not None
-    assert lr._resolve_base_ref("no-such-branch") is None
+    assert lr._resolve_base_ref("no-such-branch") is None   # strict; HEAD fallback lives in create_worktree
