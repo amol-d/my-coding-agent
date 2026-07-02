@@ -62,7 +62,7 @@ import subprocess
 import sys
 from events import emit
 from llm import get_llm
-from tools.local_repo import repo_path
+from tools.local_repo import repo_path, set_active_repo
 
 STAGE = "review"
 
@@ -93,6 +93,7 @@ def _run_linter(filepath: str) -> str:
 
 def review_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
+    set_active_repo(state.get("worktree_path"))
     emit(task_id, "stage_started", action="Reviewing generated code", node=STAGE)
     generated_code = state.get("generated_code", {})
     arch_context = state.get("arch_context", "")
@@ -113,12 +114,18 @@ def review_agent(state: dict) -> dict:
         f"{fp}:\n{out}" for fp, out in lint_output.items()
     ) if lint_output else "No linting issues found."
 
+    acceptance = (state.get("plan", {}) or {}).get("acceptance_criteria", [])
+    criteria_blob = "\n".join(f"- {c}" for c in acceptance) if acceptance else "None specified."
+
     code_str = json.dumps(generated_code, indent=2)
 
     prompt = f"""Review the following code changes for an existing codebase.
 
 ARCHITECTURE CONTEXT:
 {arch_context}
+
+ACCEPTANCE CRITERIA (from the approved plan):
+{criteria_blob}
 
 LINTER OUTPUT:
 {lint_summary}
@@ -127,6 +134,8 @@ CODE CHANGES:
 {code_str}
 
 Check for:
+- Whether the change satisfies EACH acceptance criterion above — mark any criterion
+  that is NOT met by this code as a "blocking" comment
 - Logic errors and edge cases
 - Security vulnerabilities
 - Breaking changes to existing interfaces

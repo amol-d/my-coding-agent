@@ -160,6 +160,23 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                         <div style={{fontSize: 13, fontWeight: 500, marginBottom: 8, color: "var(--text-secondary)"}}>
                             Implementation plan
                         </div>
+                        {Array.isArray(payload.acceptance_criteria) && payload.acceptance_criteria.length > 0 && (
+                            <div style={{
+                                marginBottom: 10, padding: "0.75rem 0.875rem", borderRadius: "var(--radius)",
+                                background: "var(--bg-accent)", border: "0.5px solid var(--border)"
+                            }}>
+                                <div style={{fontSize: 12, fontWeight: 500, marginBottom: 6, color: "var(--text-accent)"}}>
+                                    <i className="ti ti-checklist" aria-hidden style={{marginRight: 6}}/>
+                                    Acceptance criteria ({payload.acceptance_criteria.length})
+                                </div>
+                                {payload.acceptance_criteria.map((c: string, i: number) => (
+                                    <div key={i} style={{fontSize: 12.5, lineHeight: 1.6, display: "flex", gap: 6}}>
+                                        <span style={{color: "var(--text-muted)"}}>☐</span>
+                                        <span>{c}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         <pre style={{
                             fontSize: 12.5, whiteSpace: "pre-wrap", margin: 0,
                             padding: "0.875rem", borderRadius: "var(--radius)",

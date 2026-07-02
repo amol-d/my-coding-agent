@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+import usage
+
 # task_id -> Queue of event dicts. A sentinel None is enqueued to end draining.
 _queues: dict[str, "queue.Queue"] = {}
 
@@ -74,9 +76,11 @@ class StepCallbackHandler(BaseCallbackHandler):
     what the model is doing during an otherwise-opaque call.
     """
 
-    def __init__(self, task_id: str, stage: str, label: Optional[str] = None):
+    def __init__(self, task_id: str, stage: str, model: Optional[str] = None,
+                 label: Optional[str] = None):
         self.task_id = task_id
         self.stage = stage
+        self.model = model
         self.label = label or STAGE_LABELS.get(stage, stage)
 
     def on_llm_start(self, serialized, prompts, **kwargs) -> None:
@@ -86,7 +90,34 @@ class StepCallbackHandler(BaseCallbackHandler):
     def on_llm_end(self, response, **kwargs) -> None:
         emit(self.task_id, "stage_progress", action=f"{self.label} — received response",
              node=self.stage)
+        tokens = self._extract_usage(response)
+        if tokens:
+            snap = usage.record(self.task_id, self.stage, self.model, tokens[0], tokens[1])
+            t = snap["totals"]
+            emit(self.task_id, "usage", node=self.stage,
+                 prompt_tokens=tokens[0], completion_tokens=tokens[1],
+                 run_tokens=t["total"], run_cost_usd=round(t["cost_usd"], 4),
+                 run_calls=t["calls"])
 
     def on_llm_error(self, error, **kwargs) -> None:
         emit(self.task_id, "stage_progress", action=f"{self.label} — LLM error: {error}",
              node=self.stage)
+
+    @staticmethod
+    def _extract_usage(response) -> Optional[tuple[int, int]]:
+        """Pull (prompt_tokens, completion_tokens) from an LLMResult, tolerating the
+        two shapes LangChain surfaces (provider llm_output vs message usage_metadata)."""
+        try:
+            tu = (getattr(response, "llm_output", None) or {}).get("token_usage") or {}
+            if tu:
+                return int(tu.get("prompt_tokens", 0)), int(tu.get("completion_tokens", 0))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            msg = response.generations[0][0].message
+            um = getattr(msg, "usage_metadata", None) or {}
+            if um:
+                return int(um.get("input_tokens", 0)), int(um.get("output_tokens", 0))
+        except Exception:  # noqa: BLE001
+            pass
+        return None

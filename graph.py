@@ -21,8 +21,10 @@ from hitl.checkpoints import (
     hitl_commit_gate, hitl_deploy_gate,
 )
 
-# Bound the coding retry loop so a persistently-rejecting reviewer can't spin forever.
-MAX_CODE_RETRIES = 3
+# Bound the coding retry loop so auto-reflection (blocking review / failing tests)
+# and human rejections — which all re-enter coding and share this counter — can't
+# spin forever. Configurable via MAX_CODE_RETRIES.
+MAX_CODE_RETRIES = int(os.environ.get("MAX_CODE_RETRIES", "3"))
 
 
 class PipelineState(TypedDict, total=False):
@@ -37,10 +39,12 @@ class PipelineState(TypedDict, total=False):
     base_branch: Optional[str]     # target branch for a PR, from NL ("PR to dev")
     arch_context: str
     clarified_spec: str
-    implementation_plan: str
+    implementation_plan: str       # human-readable markdown, rendered from `plan`
+    plan: dict                     # structured: files_to_touch, acceptance_criteria, …
     generated_code: dict
     original_code: dict            # original file contents for diff
     branch_name: str               # git branch created for this task
+    worktree_path: Optional[str]   # isolated per-run git worktree (None = main checkout)
     written_files: List[str]       # files written to repo
     lint_output: dict              # linter results per file
     review_comments: List[dict]
@@ -76,6 +80,37 @@ def route_after_plan(state: dict) -> str:
         return "abort"
     decision = state.get("hitl_decisions", {}).get("plan", "approved")
     return "coding" if decision in ("approved", "override") else "revise"
+
+
+def route_after_coding(state: dict) -> str:
+    """A coding failure (e.g. worktree/branch setup, no spec) must abort the run —
+    not drag the human through meaningless review/test/commit gates on empty output."""
+    return "abort" if state.get("error") else "review"
+
+
+def route_after_review(state: dict) -> str:
+    """Auto-reflect on BLOCKING review comments before bothering the human: loop
+    back to coding to self-fix, bounded by the retry budget. Otherwise, hand the
+    (converged or budget-exhausted) code to the human gate."""
+    if state.get("error"):
+        return "human"
+    if state.get("code_retry_count", 0) >= MAX_CODE_RETRIES:
+        return "human"
+    blocking = [c for c in state.get("review_comments", []) or []
+                if c.get("severity") == "blocking"]
+    return "reflect" if blocking else "human"
+
+
+def route_after_testing(state: dict) -> str:
+    """Auto-reflect on a real test failure (not skipped / no-runner) before the
+    human gate: loop back to coding with the failure output, bounded by budget."""
+    if state.get("error"):
+        return "human"
+    if state.get("code_retry_count", 0) >= MAX_CODE_RETRIES:
+        return "human"
+    if state.get("test_results", {}).get("status") == "failed":
+        return "reflect"
+    return "human"
 
 
 def should_retry_code(state: dict) -> str:
@@ -189,16 +224,25 @@ def build_graph():
         "abort": END,
     })
 
-    # code → review → human gate (with bounded retry)
-    builder.add_edge("coding", "review")
-    builder.add_edge("review", "hitl_code")
+    # code → review → (auto-reflect on blocking issues | human gate)
+    builder.add_conditional_edges("coding", route_after_coding, {
+        "review": "review",
+        "abort": END,
+    })
+    builder.add_conditional_edges("review", route_after_review, {
+        "reflect": "coding",     # self-fix blocking review comments (bounded)
+        "human": "hitl_code",
+    })
     builder.add_conditional_edges("hitl_code", should_retry_code, {
         "retry_code": "coding",
         "proceed_to_tests": "testing",
     })
 
-    # tests → human gate
-    builder.add_edge("testing", "hitl_tests")
+    # tests → (auto-reflect on real failures | human gate)
+    builder.add_conditional_edges("testing", route_after_testing, {
+        "reflect": "coding",     # self-fix failing tests (bounded)
+        "human": "hitl_tests",
+    })
     builder.add_conditional_edges("hitl_tests", should_proceed_commit, {
         "retry_code": "coding",
         "commit_gate": "hitl_commit",
@@ -239,8 +283,8 @@ if __name__ == "__main__":
     # Regenerate the flow diagram: python graph.py
     try:
         pipeline.get_graph().draw_mermaid_png(
-            output_file_path="./flow_control_production.png"
+            output_file_path="./flow_control_production2Jul.png"
         )
-        print("Wrote flow_control_production.png")
+        print("Wrote flow_control_production_2Jul.png")
     except Exception as e:  # noqa: BLE001
         print(f"Could not render PNG (needs graphviz/mermaid): {e}")

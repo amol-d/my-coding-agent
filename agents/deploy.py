@@ -12,13 +12,14 @@ import os
 import subprocess
 
 from events import emit
-from tools.local_repo import repo_path
+from tools.local_repo import repo_path, set_active_repo
 
 STAGE = "deploy"
 
 
 def deploy_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
+    set_active_repo(state.get("worktree_path"))
     emit(task_id, "stage_started", action="Deploying", node=STAGE)
 
     command = os.environ.get("DEPLOY_COMMAND", "").strip()

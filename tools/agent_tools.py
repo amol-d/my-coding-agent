@@ -74,8 +74,9 @@ def make_tools(tracker: Tracker):
         return _apply_patch(path, edits)
 
     def run_command(command: str) -> str:
-        """Run an allowlisted command (pytest, npm/npx, tsc, ruff, read-only git) in the
-        repo to verify your changes. No shell operators; output is truncated."""
+        """Run an allowlisted command (pytest, npm/npx, tsc, ruff, read-only git) to
+        verify your changes. Runs in an isolated container sandbox when available, else
+        on the host. No shell operators; output is truncated."""
         return _run_command(command)
 
     def finish(summary: str) -> str:

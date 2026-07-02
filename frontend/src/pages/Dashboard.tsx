@@ -32,13 +32,15 @@ export default function Dashboard() {
     const [hitlEvent, setHitlEvent] = useState<any>(null)
     const [status, setStatus] = useState<"running" | "waiting" | "done" | "error">("running")
     const [showLog, setShowLog] = useState(false)
+    const [usage, setUsage] = useState<{ tokens: number; cost: number } | null>(null)
     const wsRef = useRef<WebSocket | null>(null)
 
     const setStage = (node: string, patch: Partial<StageState>) =>
         setStages(prev => ({...prev, [node]: {...(prev[node] || {status: "pending", action: ""}), ...patch}}))
 
     useEffect(() => {
-        const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
+        const token = localStorage.getItem("token") || ""
+        const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}?token=${encodeURIComponent(token)}`)
         wsRef.current = ws
 
         ws.onmessage = (msg) => {
@@ -67,6 +69,9 @@ export default function Dashboard() {
                     if (stg) setStage(stg, {status: "done", action: "awaiting your review"})
                     break
                 }
+                case "usage":
+                    setUsage({tokens: data.run_tokens || 0, cost: data.run_cost_usd || 0})
+                    break
                 case "pipeline_complete":
                     setStatus("done")
                     setLog(prev => [...prev, {node: "done", summary: "Pipeline finished", ts: now}])
@@ -108,9 +113,20 @@ export default function Dashboard() {
                     fontSize: 12, padding: "3px 10px", borderRadius: 20,
                     background: badge.bg, color: badge.c
                 }}>{badge.t}</span>
+                {usage && (
+                    <span title={`${usage.tokens.toLocaleString()} tokens across LLM calls`}
+                          style={{
+                              fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)",
+                              marginLeft: "auto"
+                          }}>
+                        <i className="ti ti-coin" aria-hidden style={{marginRight: 4}}/>
+                        {usage.tokens >= 1000 ? `${(usage.tokens / 1000).toFixed(1)}k` : usage.tokens} tok
+                        {" · $"}{usage.cost.toFixed(4)}
+                    </span>
+                )}
                 <span style={{
                     fontSize: 12, color: "var(--text-muted)",
-                    fontFamily: "var(--font-mono)", marginLeft: "auto"
+                    fontFamily: "var(--font-mono)", marginLeft: usage ? 12 : "auto"
                 }}>{taskId?.slice(0, 8)}</span>
             </div>
 

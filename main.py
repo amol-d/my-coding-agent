@@ -9,18 +9,33 @@ import uuid, asyncio, os, glob, json, queue
 from concurrent.futures import ThreadPoolExecutor
 from langgraph.types import Command
 from graph import pipeline
-from auth import create_token, verify_token, ADMIN_USERNAME, ADMIN_PASSWORD
+from auth import (
+    create_token, verify_token, decode_token, verify_credentials, security_warnings,
+)
 from run_store import create_run, update_run, get_runs, get_run
 import events
+import usage
 from tools.doc_ingest import parse_document
+from tools.local_repo import remove_worktree, worktree_path_for
 
 app = FastAPI()
+
+# Restrict browser origins to the configured frontend(s); default to local dev.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+for _w in security_warnings():
+    print(f"[SECURITY] {_w}")
 
 active_connections: dict[str, WebSocket] = {}
 executor = ThreadPoolExecutor(max_workers=4)
@@ -37,7 +52,7 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def login(body: LoginRequest):
-    if body.username != ADMIN_USERNAME or body.password != ADMIN_PASSWORD:
+    if not verify_credentials(body.username, body.password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token(body.username)
     return {"token": token, "username": body.username}
@@ -177,29 +192,66 @@ async def _run_graph(task_id: str, input_data):
     pr_url = state.get("pr_url")
     extra = {"pr_url": pr_url} if pr_url else {}
 
+    # token + cost accounting so far (persists across HITL pauses; reset on terminal)
+    u = usage.totals(task_id)["totals"]
+    cost = {"cost_usd": round(u["cost_usd"], 4), "tokens_total": u["total"],
+            "llm_calls": u["calls"]}
+
     if interrupted:
+        # paused at a HITL gate — keep the worktree so the run can resume into it
         await safe_send(task_id, "hitl_required", {
             "node": interrupt_node or (results[-1][0] if results else "hitl"),
             "stage": state.get("current_stage", ""),
             "payload": state,
         })
         update_run(task_id, status="waiting",
-                   outcome=state.get("current_stage"), **extra)
+                   outcome=state.get("current_stage"), **extra, **cost)
     elif state.get("error"):
+        _cleanup_worktree(state)   # terminal failure — discard the isolated worktree
         await safe_send(task_id, "error", {"message": state["error"]})
-        update_run(task_id, status="error", error=state["error"], **extra)
+        update_run(task_id, status="error", error=state["error"], **extra, **cost)
+        usage.reset(task_id)
     else:
+        _cleanup_worktree(state)   # done — commits persist on the branch in main
+        await safe_send(task_id, "usage", {"summary": True, "run_tokens": u["total"],
+                                           "run_cost_usd": cost["cost_usd"],
+                                           "run_calls": u["calls"]})
         await safe_send(task_id, "pipeline_complete", {
             "message": "Pipeline finished successfully"
         })
         update_run(task_id, status="complete", outcome="done",
-                   commit_sha=state.get("commit_sha"), **extra)
+                   commit_sha=state.get("commit_sha"), **extra, **cost)
+        usage.reset(task_id)
+
+
+def _cleanup_worktree(state: dict) -> None:
+    """Remove a finished run's isolated worktree. Any commits made in it remain
+    reachable via their branch in the main checkout, so this only reclaims the
+    working directory — it never discards committed work."""
+    path = state.get("worktree_path")
+    if path:
+        try:
+            remove_worktree(path)
+        except Exception:
+            pass
+
+
+def _cleanup_worktree_by_task(task_id: str) -> None:
+    """Reclaim a run's worktree when the stream raised before returning state
+    (so we have no worktree_path). Path is deterministic from task_id; a no-op if
+    the run never created one (e.g. a git-ops run on the main checkout)."""
+    try:
+        remove_worktree(worktree_path_for(task_id))
+    except Exception:
+        pass
 
 
 async def run_pipeline(task_id: str, initial_state: dict):
     try:
         await _run_graph(task_id, initial_state)
     except Exception as e:
+        _cleanup_worktree_by_task(task_id)   # don't leak a worktree on hard failure
+        usage.reset(task_id)
         await safe_send(task_id, "error", {"message": str(e)})
         update_run(task_id, status="error", error=str(e))
 
@@ -214,6 +266,8 @@ async def run_pipeline_resume(task_id: str, decision: dict):
     try:
         await _run_graph(task_id, Command(resume=resume_value))
     except Exception as e:
+        _cleanup_worktree_by_task(task_id)   # don't leak a worktree on hard failure
+        usage.reset(task_id)
         await safe_send(task_id, "error", {"message": str(e)})
         update_run(task_id, status="error", error=str(e))
 
@@ -291,6 +345,13 @@ async def resume_run(
 
 @app.websocket("/ws/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
+    # Authenticate the handshake: the run stream carries the spec, generated code
+    # and file contents, so it must not be world-readable. Browsers can't set
+    # Authorization on a WebSocket, so the token is passed as a query param.
+    token = websocket.query_params.get("token")
+    if not token or decode_token(token) is None:
+        await websocket.close(code=1008)   # policy violation
+        return
     await websocket.accept()
     active_connections[task_id] = websocket
     try:

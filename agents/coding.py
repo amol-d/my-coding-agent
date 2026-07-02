@@ -24,8 +24,10 @@ from events import emit
 from llm import get_llm
 from tools.agent_tools import Tracker, make_tools
 from tools.local_repo import (
-    read_file, git_create_branch, git_checkout, git_current_branch,
+    read_file, git_current_branch, create_worktree, set_active_repo,
 )
+from tools.sandbox import sandbox_status
+from usage import over_budget
 
 DEFAULT_BRANCH = os.environ.get("DEFAULT_BRANCH", "main")
 STAGE = "coding"
@@ -35,27 +37,79 @@ STAGE = "coding"
 MAX_AGENT_STEPS = int(os.environ.get("CODING_MAX_STEPS", "24"))
 
 
-def _resolve_branch(state: dict, task_id: str):
-    """Honor the 'don't create a new branch' directive; otherwise use/reuse a
-    dedicated feature branch. Returns (branch_name, error_or_None)."""
+def _setup_workspace(state: dict, task_id: str):
+    """Prepare an isolated workspace and point file/git ops at it.
+
+    Returns (branch_name, worktree_path, error). For the normal case this creates
+    a per-run git worktree on a fresh branch so concurrent runs don't collide and
+    a failed run can be discarded without touching the main checkout. When the user
+    asked to edit the CURRENT branch (create_new_branch=false), we stay on the main
+    checkout since a worktree can't check out an already-checked-out branch.
+    """
+    existing = state.get("worktree_path")
+    if existing:
+        # a retry or resume within the same run — reuse the same worktree
+        set_active_repo(existing)
+        return state.get("branch_name"), existing, None
+
     if not state.get("create_new_branch", True):
+        set_active_repo(None)
         branch = state.get("branch_name") or git_current_branch()
-        emit(task_id, "stage_progress", action=f"Using existing branch {branch}", node=STAGE)
-        return branch, None
+        emit(task_id, "stage_progress",
+             action=f"Using current branch {branch} (main checkout)", node=STAGE)
+        return branch, None, None
 
     branch = state.get("branch_name") or f"agent/{task_id[:8]}"
-    if git_current_branch() != branch:
-        git_checkout(DEFAULT_BRANCH)
-        ok, msg = git_create_branch(branch)
-        if not ok:
-            return branch, f"Could not create branch: {msg}"
-    return branch, None
+    emit(task_id, "stage_progress",
+         action=f"Creating isolated worktree on {branch}", node=STAGE)
+    worktree_path, msg = create_worktree(branch, DEFAULT_BRANCH, task_id)
+    if worktree_path is None:
+        return branch, None, f"Could not create worktree: {msg}"
+    set_active_repo(worktree_path)
+    return branch, worktree_path, None
 
 
-def _system_prompt(arch_context: str, plan: str, feedback: str) -> str:
+def _reflection_notes(state: dict) -> str:
+    """Assemble the objective signals a retry should address: human rejection
+    feedback, BLOCKING automated review comments, and test-suite failures. Empty
+    string on the first attempt (no signals yet)."""
+    parts = []
+
+    human_fb = state.get("hitl_feedback", {}).get("code_review", "")
+    if human_fb:
+        parts.append(f"A human REJECTED the previous attempt with this feedback:\n{human_fb}")
+
+    blocking = [c for c in state.get("review_comments", []) or []
+                if c.get("severity") == "blocking"]
+    if blocking:
+        lines = "\n".join(
+            f"- {c.get('file', '?')}: {c.get('comment', '')}" for c in blocking
+        )
+        parts.append(f"Automated review found BLOCKING issues you must fix:\n{lines}")
+
+    tr = state.get("test_results", {}) or {}
+    if tr.get("status") == "failed":
+        out = (tr.get("output", "") or "")[:1500]
+        parts.append(
+            "The test suite FAILED. Make the code (or the tests, if they are wrong) "
+            f"correct so it passes.\nTest command: {tr.get('test_command', '')}\n"
+            f"Output:\n{out}"
+        )
+
+    return "\n\n".join(parts)
+
+
+def _system_prompt(arch_context: str, plan: str, acceptance: list, reflection: str) -> str:
     revision = (
-        f"\n\nA human REJECTED your previous attempt with this feedback — address it:\n{feedback}\n"
-        if feedback else ""
+        "\n\nYou are REVISING a previous attempt. Before anything else, address the "
+        f"following and verify your fix with run_command:\n{reflection}\n"
+        if reflection else ""
+    )
+    criteria = (
+        "\n\nACCEPTANCE CRITERIA — your change MUST satisfy every one of these; a reviewer "
+        "will check them and send unmet ones back to you:\n"
+        + "\n".join(f"- {c}" for c in acceptance) + "\n"
+        if acceptance else ""
     )
     return f"""You are a senior software engineer working directly in an existing repository.
 Fulfill the task by exploring the codebase and making targeted edits with your tools.
@@ -65,7 +119,7 @@ ARCHITECTURE GUIDELINES:
 
 APPROVED IMPLEMENTATION PLAN:
 {plan or "N/A"}
-{revision}
+{criteria}{revision}
 How to work:
 - First explore: use list_files / grep / read_file to understand the existing code,
   conventions, and the exact files you need to change. Do NOT guess file contents.
@@ -73,7 +127,9 @@ How to work:
   exactly once). Use create_file only for genuinely new files.
 - Match the surrounding code's style, patterns, and conventions precisely.
 - Keep the change minimal and scoped to the task — do not refactor unrelated code.
-- When useful, run tests/linters/type-checks with run_command and fix what you find.
+- A dedicated review + unit-test suite runs after you finish and will send blocking
+  issues or test failures back to you. Pre-empt that: run the relevant tests, linters
+  and type-checks with run_command and fix what you find BEFORE calling finish.
 - Call finish with a short summary once the change is complete and consistent.
 
 File paths are always relative to the repo root and never start with '/'."""
@@ -83,34 +139,44 @@ def coding_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
     clarified_spec = state.get("clarified_spec") or state.get("raw_instructions") or ""
     emit(task_id, "stage_started", action="Generating code changes", node=STAGE)
+    emit(task_id, "stage_progress", action=f"Command sandbox: {sandbox_status()}", node=STAGE)
 
     if not clarified_spec:
         emit(task_id, "error", message="No task specification found", node=STAGE)
         return {"error": "No task specification found", "current_stage": "error"}
 
-    feedback = state.get("hitl_feedback", {}).get("code_review", "")
+    reflection = _reflection_notes(state)
     retry_count = state.get("code_retry_count", 0)
+    if reflection and retry_count > 0:
+        emit(task_id, "stage_progress",
+             action=f"Self-correcting from review/test feedback (attempt {retry_count + 1})",
+             node=STAGE)
 
-    branch_name, branch_err = _resolve_branch(state, task_id)
+    branch_name, worktree_path, branch_err = _setup_workspace(state, task_id)
     if branch_err:
         emit(task_id, "error", message=branch_err, node=STAGE)
         return {"error": branch_err, "current_stage": "error"}
 
     arch_context = state.get("arch_context") or get_arch_context(clarified_spec)
     plan = state.get("implementation_plan", "")
+    acceptance = (state.get("plan", {}) or {}).get("acceptance_criteria", [])
 
     tracker = Tracker()
     tools, tool_map = make_tools(tracker)
     llm = get_llm(task_id=task_id, stage=STAGE, max_tokens=4096).bind_tools(tools)
 
     messages = [
-        SystemMessage(content=_system_prompt(arch_context, plan, feedback)),
+        SystemMessage(content=_system_prompt(arch_context, plan, acceptance, reflection)),
         HumanMessage(content=f"TASK:\n{clarified_spec}"),
     ]
 
     emit(task_id, "stage_progress", action="Exploring the codebase", node=STAGE)
     finished = False
     for step in range(MAX_AGENT_STEPS):
+        if over_budget(task_id):
+            emit(task_id, "stage_progress",
+                 action="Run budget reached — stopping code generation", node=STAGE)
+            break
         response = llm.invoke(messages)
         messages.append(response)
 
@@ -172,6 +238,7 @@ def coding_agent(state: dict) -> dict:
         "original_code": original_code,
         "arch_context": arch_context,
         "branch_name": branch_name,
+        "worktree_path": worktree_path,
         "written_files": written,
         "code_retry_count": retry_count + 1,
         # clear consumed feedback so a later approval doesn't re-trigger a revision

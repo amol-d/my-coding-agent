@@ -29,7 +29,10 @@ def hitl_plan_review(state: dict) -> dict:
     decision = interrupt({
         "checkpoint": "plan",
         "stage": "Review the implementation plan before coding",
-        "payload": {"implementation_plan": state.get("implementation_plan", "")},
+        "payload": {
+            "implementation_plan": state.get("implementation_plan", ""),
+            "acceptance_criteria": (state.get("plan", {}) or {}).get("acceptance_criteria", []),
+        },
         "clarified_spec": state.get("clarified_spec", ""),
     })
     return {

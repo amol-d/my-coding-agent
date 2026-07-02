@@ -169,13 +169,14 @@ load_dotenv()
 from github import Github, GithubException
 import os
 from events import emit
-from tools.local_repo import git_push, git_current_branch
+from tools.local_repo import git_push, git_current_branch, set_active_repo
 
 STAGE = "pr_manager"
 
 
 def pr_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
+    set_active_repo(state.get("worktree_path"))
     want_pr = bool((state.get("options", {}) or {}).get("create_pr"))
     emit(task_id, "stage_started",
          action="Pushing branch and opening PR" if want_pr else "Pushing branch",

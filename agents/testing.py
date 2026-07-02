@@ -104,7 +104,7 @@ import sys
 from pathlib import Path
 from events import emit
 from llm import get_llm
-from tools.local_repo import repo_path, write_file, list_repo_files
+from tools.local_repo import repo_path, write_file, list_repo_files, set_active_repo
 
 STAGE = "testing"
 
@@ -201,6 +201,7 @@ Only return the JSON, nothing else, no markdown fences."""
 
 def testing_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
+    set_active_repo(state.get("worktree_path"))
     emit(task_id, "stage_started", action="Generating unit tests", node=STAGE)
     generated_code = state.get("generated_code", {})
     arch_context = state.get("arch_context", "")

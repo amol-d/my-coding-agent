@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from events import emit
-from tools.local_repo import git_add_all, git_commit, git_status, git_run
+from tools.local_repo import git_add_all, git_commit, git_status, git_run, set_active_repo
 
 STAGE = "commit"
 
 
 def commit_agent(state: dict) -> dict:
     task_id = state.get("task_id", "unknown")
+    set_active_repo(state.get("worktree_path"))   # commit in the run's worktree
     emit(task_id, "stage_started", action="Staging changes", node=STAGE)
 
     branch_name = state.get("branch_name")
