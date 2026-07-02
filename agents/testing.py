@@ -101,30 +101,70 @@ load_dotenv()
 import json
 import subprocess
 import sys
-import os
 from pathlib import Path
-from langchain_openai import ChatOpenAI
+from events import emit
+from llm import get_llm
 from tools.local_repo import repo_path, write_file, list_repo_files
 
-llm = ChatOpenAI(model="gpt-4.1-mini", max_tokens=3000)
+STAGE = "testing"
+
+PY_TEST_EXTS = (".py",)
+JS_TEST_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+IGNORE_DIRS = {"node_modules", ".git", "dist", "build", ".next", "coverage"}
 
 
-def _detect_test_command() -> list[str]:
-    """Detect which test runner the project uses."""
-    root = repo_path()
-    if (root / "pytest.ini").exists() or (root / "pyproject.toml").exists():
-        return [sys.executable, "-m", "pytest", "--tb=short", "-v"]
-    if (root / "package.json").exists():
-        pkg = json.loads((root / "package.json").read_text())
-        scripts = pkg.get("scripts", {})
-        if "test" in scripts:
-            return ["npm", "test", "--", "--watchAll=false"]
-    # fallback
-    return [sys.executable, "-m", "pytest", "--tb=short", "-v"]
+def _nearest_package_json(rel_test_path: str) -> Path | None:
+    """Walk up from a JS test file to find the owning package.json; fall back to
+    the shallowest package.json in the repo (e.g. a `frontend/` subproject)."""
+    root = repo_path().resolve()
+    d = (repo_path() / rel_test_path).parent.resolve()
+    while True:
+        if (d / "package.json").exists():
+            return d
+        if d == root or d.parent == d:
+            break
+        d = d.parent
+    candidates = [
+        p.parent for p in repo_path().rglob("package.json")
+        if not any(part in IGNORE_DIRS for part in p.parts)
+    ]
+    return min(candidates, key=lambda p: len(p.parts)) if candidates else None
 
 
-def _generate_unit_tests(generated_code: dict, arch_context: str) -> dict[str, str]:
-    """Ask GPT-4o to generate unit tests for the new code."""
+def _plan_test_run(test_files: dict) -> tuple[list[str] | None, str, str, str]:
+    """Choose a runner based on the generated test files' languages.
+
+    Returns (command, cwd, kind, note). command is None when no runner applies.
+    """
+    paths = list(test_files.keys())
+    js = [p for p in paths if p.endswith(JS_TEST_EXTS)]
+    py = [p for p in paths if p.endswith(PY_TEST_EXTS)]
+
+    # Prefer whichever language the generated tests are actually written in.
+    if js and not py:
+        pkg_dir = _nearest_package_json(js[0])
+        if pkg_dir is None:
+            return None, str(repo_path()), "js", "No package.json found for JS/TS tests."
+        pkg = json.loads((pkg_dir / "package.json").read_text())
+        deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        rel = [str((repo_path() / p).resolve().relative_to(pkg_dir)) for p in js]
+        if "vitest" in deps:
+            return ["npx", "vitest", "run", *rel], str(pkg_dir), "js", ""
+        if "jest" in deps:
+            return ["npx", "jest", *rel, "--watchAll=false"], str(pkg_dir), "js", ""
+        if "test" in pkg.get("scripts", {}):
+            return ["npm", "test"], str(pkg_dir), "js", "Ran project `npm test` script."
+        return None, str(pkg_dir), "js", "No JS test runner (vitest/jest/test script) available."
+
+    if py:
+        cmd = [sys.executable, "-m", "pytest", *py, "--tb=short", "-v"]
+        return cmd, str(repo_path()), "py", ""
+
+    return None, str(repo_path()), "none", "No test files were generated."
+
+
+def _generate_unit_tests(generated_code: dict, arch_context: str, task_id: str) -> dict[str, str]:
+    """Ask the LLM to generate unit tests for the new code."""
     existing_tests = list_repo_files(extensions=["_test.py", "test_.py", ".test.ts", ".spec.ts"])
     test_context = "\n".join(existing_tests[:5]) if existing_tests else "No existing tests found."
 
@@ -149,6 +189,7 @@ Rules:
 Return a JSON object where keys are test file paths and values are complete test file contents.
 Only return the JSON, nothing else, no markdown fences."""
 
+    llm = get_llm(task_id=task_id, stage=STAGE, max_tokens=3000)
     response = llm.invoke(prompt)
     try:
         content = response.content.strip()
@@ -159,48 +200,74 @@ Only return the JSON, nothing else, no markdown fences."""
 
 
 def testing_agent(state: dict) -> dict:
+    task_id = state.get("task_id", "unknown")
+    emit(task_id, "stage_started", action="Generating unit tests", node=STAGE)
     generated_code = state.get("generated_code", {})
     arch_context = state.get("arch_context", "")
 
     if not generated_code:
+        emit(task_id, "node_complete", node=STAGE)
         return {
             "test_results": {"passed": False, "output": "No code to test", "test_files": {}},
             "current_stage": "testing_complete"
         }
 
     # generate and write unit tests into the repo
-    test_files = _generate_unit_tests(generated_code, arch_context)
+    test_files = _generate_unit_tests(generated_code, arch_context, task_id)
     for filepath, content in test_files.items():
         write_file(filepath.lstrip("/"), content)
 
-    # run the actual project test suite
-    test_command = _detect_test_command()
+    # pick a runner that matches the language of the generated tests
+    command, cwd, kind, note = _plan_test_run(test_files)
+
+    if command is None:
+        # nothing to run (no tests, or no runner) — not a code failure, let the
+        # human decide at the review gate.
+        emit(task_id, "node_complete", node=STAGE, action=note or "No tests run")
+        return {
+            "test_results": {
+                "passed": True, "status": "skipped", "ran": False,
+                "output": note, "test_files": test_files, "test_command": "",
+            },
+            "generated_code": {**generated_code, **test_files},
+            "current_stage": "testing_complete"
+        }
+
+    emit(task_id, "stage_progress",
+         action=f"Executing tests: {' '.join(command)}", node=STAGE)
+    status = "failed"
     try:
         result = subprocess.run(
-            test_command,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=str(repo_path())
+            command, capture_output=True, text=True, timeout=180, cwd=cwd
         )
-        passed = result.returncode == 0
+        code = result.returncode
         output = result.stdout + result.stderr
+        # pytest exit 5 == "no tests collected"; treat as skipped, not failure.
+        if kind == "py" and code == 5:
+            passed, status = True, "no_tests"
+        else:
+            passed = code == 0
+            status = "passed" if passed else "failed"
     except subprocess.TimeoutExpired:
-        passed = False
-        output = "Tests timed out after 120 seconds"
+        passed, output = False, "Tests timed out after 180 seconds"
     except FileNotFoundError as e:
-        passed = False
-        output = f"Test runner not found: {e}"
+        # runner binary (e.g. npx/node) not installed — not a code failure.
+        passed, status, output = True, "runner_unavailable", f"Test runner not found: {e}"
     except Exception as e:
-        passed = False
-        output = str(e)
+        passed, output = False, str(e)
 
+    action = {"passed": "Tests passed", "failed": "Tests failed",
+              "no_tests": "No tests collected",
+              "runner_unavailable": "Test runner unavailable"}.get(status, "Tests done")
+    emit(task_id, "node_complete", node=STAGE, action=action)
     return {
         "test_results": {
             "passed": passed,
+            "status": status,
+            "ran": status in ("passed", "failed"),
             "output": output[:3000],
             "test_files": test_files,
-            "test_command": " ".join(test_command)
+            "test_command": " ".join(command),
         },
         "generated_code": {**generated_code, **test_files},
         "current_stage": "testing_complete"

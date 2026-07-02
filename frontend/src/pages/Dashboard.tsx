@@ -2,14 +2,39 @@ import {useEffect, useRef, useState} from "react"
 import {useParams} from "react-router-dom"
 import HITLPanel from "../components/HITLPanel"
 
+type StageStatus = "pending" | "active" | "done" | "error"
+type StageState = { status: StageStatus; action: string }
 type LogEntry = { node: string; summary: string; ts: string }
+
+// Ordered pipeline stages shown in the stepper. HITL gates surface via the
+// status badge + panel rather than their own step rows.
+const STAGES: {node: string; label: string; icon: string}[] = [
+    {node: "ingest",  label: "Ingest documents",   icon: "ti-file-text"},
+    {node: "plan",    label: "Plan implementation", icon: "ti-list-check"},
+    {node: "coding",  label: "Generate code",       icon: "ti-code"},
+    {node: "review",  label: "Review & lint",       icon: "ti-eye"},
+    {node: "testing", label: "Write & run tests",   icon: "ti-flask"},
+    {node: "commit",  label: "Commit changes",      icon: "ti-git-commit"},
+    {node: "pr_manager", label: "Push & open PR",   icon: "ti-git-pull-request"},
+    {node: "deploy",  label: "Deploy",              icon: "ti-rocket"},
+]
+
+const HITL_TO_STAGE: Record<string, string> = {
+    hitl_plan: "plan", hitl_code: "review", hitl_tests: "testing",
+    hitl_commit: "commit", hitl_deploy: "deploy",
+}
 
 export default function Dashboard() {
     const {taskId} = useParams<{ taskId: string }>()
+    const [stages, setStages] = useState<Record<string, StageState>>({})
     const [log, setLog] = useState<LogEntry[]>([])
     const [hitlEvent, setHitlEvent] = useState<any>(null)
     const [status, setStatus] = useState<"running" | "waiting" | "done" | "error">("running")
+    const [showLog, setShowLog] = useState(false)
     const wsRef = useRef<WebSocket | null>(null)
+
+    const setStage = (node: string, patch: Partial<StageState>) =>
+        setStages(prev => ({...prev, [node]: {...(prev[node] || {status: "pending", action: ""}), ...patch}}))
 
     useEffect(() => {
         const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
@@ -17,101 +42,141 @@ export default function Dashboard() {
 
         ws.onmessage = (msg) => {
             const data = JSON.parse(msg.data)
+            const now = new Date().toLocaleTimeString()
 
-            if (data.event === "node_complete") {
-                setLog(prev => [...prev, {
-                    node: data.node,
-                    summary: `${data.node} completed`,
-                    ts: new Date().toLocaleTimeString()
-                }])
-            }
-
-            if (data.event === "hitl_required") {
-                setHitlEvent(data)
-                setStatus("waiting")
-            }
-
-            if (data.event === "error") {
-                setStatus("error")
-                setLog(prev => [...prev, {
-                    node: "error", summary: data.message, ts: new Date().toLocaleTimeString()
-                }])
+            switch (data.event) {
+                case "stage_started":
+                    setStatus("running")
+                    setStage(data.node, {status: "active", action: data.action || ""})
+                    setLog(prev => [...prev, {node: data.node, summary: data.action || `${data.node} started`, ts: now}])
+                    break
+                case "stage_progress":
+                    setStage(data.node, {status: "active", action: data.action || ""})
+                    if (data.action)
+                        setLog(prev => [...prev, {node: data.node, summary: data.action, ts: now}])
+                    break
+                case "node_complete":
+                    setStage(data.node, {status: "done", action: data.action || "completed"})
+                    setLog(prev => [...prev, {node: data.node, summary: data.action || `${data.node} completed`, ts: now}])
+                    break
+                case "hitl_required": {
+                    setHitlEvent(data)
+                    setStatus("waiting")
+                    const stg = HITL_TO_STAGE[data.node]
+                    if (stg) setStage(stg, {status: "done", action: "awaiting your review"})
+                    break
+                }
+                case "pipeline_complete":
+                    setStatus("done")
+                    setLog(prev => [...prev, {node: "done", summary: "Pipeline finished", ts: now}])
+                    break
+                case "error": {
+                    setStatus("error")
+                    if (data.node) setStage(data.node, {status: "error", action: data.message || "error"})
+                    setLog(prev => [...prev, {node: data.node || "error", summary: data.message || "error", ts: now}])
+                    break
+                }
             }
         }
 
         return () => ws.close()
     }, [taskId])
 
-    const stageIcon: Record<string, string> = {
-        coding: "ti-code",
-        review: "ti-eye",
-        hitl_code: "ti-user-check",
-        testing: "ti-flask",
-        hitl_tests: "ti-user-check",
-        pr_manager: "ti-git-pull-request",
-        hitl_deploy: "ti-rocket",
-        error: "ti-alert-triangle"
+    const badge = (() => {
+        const map = {
+            running: {t: "Running", bg: "var(--bg-accent)", c: "var(--text-accent)"},
+            waiting: {t: "Waiting for review", bg: "var(--bg-warning)", c: "var(--text-warning)"},
+            error:   {t: "Error", bg: "var(--bg-danger)", c: "var(--text-danger)"},
+            done:    {t: "Done", bg: "var(--bg-success)", c: "var(--text-success)"},
+        } as const
+        return map[status]
+    })()
+
+    const dot = (s: StageStatus) => {
+        if (s === "done")   return {icon: "ti-circle-check-filled", color: "var(--text-success)", spin: false}
+        if (s === "active") return {icon: "ti-loader-2",            color: "var(--text-accent)",  spin: true}
+        if (s === "error")  return {icon: "ti-alert-triangle-filled", color: "var(--text-danger)", spin: false}
+        return {icon: "ti-circle", color: "var(--text-muted)", spin: false}
     }
 
     return (
-        <div style={{maxWidth: 720, margin: "0 auto", padding: "2rem 1rem"}}>
-            <div style={{
-                display: "flex", alignItems: "center",
-                gap: 12, marginBottom: "2rem"
-            }}>
+        <div style={{maxWidth: 760, margin: "0 auto", padding: "2rem 1rem"}}>
+            <div style={{display: "flex", alignItems: "center", gap: 12, marginBottom: "2rem"}}>
                 <h1 style={{fontSize: 22, fontWeight: 500, margin: 0}}>Pipeline run</h1>
                 <span style={{
                     fontSize: 12, padding: "3px 10px", borderRadius: 20,
-                    background: status === "waiting" ? "var(--bg-warning)"
-                        : status === "error" ? "var(--bg-danger)"
-                            : status === "done" ? "var(--bg-success)"
-                                : "var(--bg-accent)",
-                    color: status === "waiting" ? "var(--text-warning)"
-                        : status === "error" ? "var(--text-danger)"
-                            : status === "done" ? "var(--text-success)"
-                                : "var(--text-accent)"
-                }}>
-          {status === "running" ? "Running"
-              : status === "waiting" ? "Waiting for review"
-                  : status === "error" ? "Error"
-                      : "Done"}
-        </span>
+                    background: badge.bg, color: badge.c
+                }}>{badge.t}</span>
                 <span style={{
                     fontSize: 12, color: "var(--text-muted)",
                     fontFamily: "var(--font-mono)", marginLeft: "auto"
-                }}>
-          {taskId?.slice(0, 8)}
-        </span>
+                }}>{taskId?.slice(0, 8)}</span>
             </div>
 
+            {/* ── STAGE STEPPER ── */}
             <div style={{
                 background: "var(--surface-1)", borderRadius: 12,
-                border: "0.5px solid var(--border)", padding: "1rem",
+                border: "0.5px solid var(--border)", padding: "0.5rem 1rem",
                 marginBottom: "1rem"
             }}>
-                {log.length === 0 && (
-                    <div style={{
-                        fontSize: 13, color: "var(--text-muted)", textAlign: "center",
-                        padding: "1rem 0"
-                    }}>
-                        Agents starting up...
+                {STAGES.map((s, i) => {
+                    const st = stages[s.node]?.status || "pending"
+                    const action = stages[s.node]?.action || ""
+                    const d = dot(st)
+                    return (
+                        <div key={s.node} style={{
+                            display: "flex", alignItems: "flex-start", gap: 12,
+                            padding: "10px 0",
+                            borderTop: i > 0 ? "0.5px solid var(--border)" : "none",
+                            opacity: st === "pending" ? 0.5 : 1
+                        }}>
+                            <i className={`ti ${d.icon} ${d.spin ? "spin" : ""}`} aria-hidden
+                               style={{fontSize: 18, color: d.color, marginTop: 1}}/>
+                            <div style={{flex: 1, minWidth: 0}}>
+                                <div style={{fontSize: 13.5, display: "flex", alignItems: "center", gap: 8}}>
+                                    <i className={`ti ${s.icon}`} aria-hidden
+                                       style={{fontSize: 14, color: "var(--text-secondary)"}}/>
+                                    {s.label}
+                                </div>
+                                {action && st !== "pending" && (
+                                    <div style={{
+                                        fontSize: 12, color: st === "error" ? "var(--text-danger)" : "var(--text-muted)",
+                                        marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+                                    }}>{action}</div>
+                                )}
+                            </div>
+                        </div>
+                    )
+                })}
+                {Object.keys(stages).length === 0 && (
+                    <div style={{fontSize: 13, color: "var(--text-muted)", textAlign: "center", padding: "0.75rem 0"}}>
+                        Agents starting up…
                     </div>
                 )}
-                {log.map((entry, i) => (
-                    <div key={i} style={{
-                        display: "flex", alignItems: "center", gap: 10,
-                        padding: "8px 0",
-                        borderTop: i > 0 ? "0.5px solid var(--border)" : "none"
+            </div>
+
+            {/* ── ACTIVITY LOG (collapsible) ── */}
+            <div style={{marginBottom: "1rem"}}>
+                <button onClick={() => setShowLog(v => !v)} style={{fontSize: 12}}>
+                    <i className={`ti ${showLog ? "ti-chevron-down" : "ti-chevron-right"}`}
+                       aria-hidden style={{marginRight: 6}}/>
+                    Activity log ({log.length})
+                </button>
+                {showLog && (
+                    <div style={{
+                        marginTop: 8, background: "var(--surface-1)", borderRadius: 10,
+                        border: "0.5px solid var(--border)", padding: "0.5rem 0.875rem",
+                        maxHeight: 260, overflowY: "auto"
                     }}>
-                        <i className={`ti ${stageIcon[entry.node] || "ti-circle-check"}`}
-                           aria-hidden style={{fontSize: 16, color: "var(--text-secondary)"}}/>
-                        <span style={{fontSize: 13, flex: 1}}>{entry.summary}</span>
-                        <span style={{
-                            fontSize: 11, color: "var(--text-muted)",
-                            fontFamily: "var(--font-mono)"
-                        }}>{entry.ts}</span>
+                        {log.map((e, i) => (
+                            <div key={i} style={{display: "flex", gap: 10, padding: "4px 0", fontSize: 12}}>
+                                <span style={{fontFamily: "var(--font-mono)", color: "var(--text-muted)"}}>{e.ts}</span>
+                                <span style={{fontFamily: "var(--font-mono)", color: "var(--text-secondary)"}}>{e.node}</span>
+                                <span style={{flex: 1, color: "var(--text-primary)"}}>{e.summary}</span>
+                            </div>
+                        ))}
                     </div>
-                ))}
+                )}
             </div>
 
             {hitlEvent && status === "waiting" && (

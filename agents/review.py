@@ -60,10 +60,11 @@ load_dotenv()
 import json
 import subprocess
 import sys
-from langchain_openai import ChatOpenAI
+from events import emit
+from llm import get_llm
 from tools.local_repo import repo_path
 
-llm = ChatOpenAI(model="gpt-4.1-mini", max_tokens=2048)
+STAGE = "review"
 
 
 def _run_linter(filepath: str) -> str:
@@ -91,13 +92,17 @@ def _run_linter(filepath: str) -> str:
     return ""
 
 def review_agent(state: dict) -> dict:
+    task_id = state.get("task_id", "unknown")
+    emit(task_id, "stage_started", action="Reviewing generated code", node=STAGE)
     generated_code = state.get("generated_code", {})
     arch_context = state.get("arch_context", "")
 
     if not generated_code:
+        emit(task_id, "node_complete", node=STAGE)
         return {"review_comments": [], "current_stage": "review_complete"}
 
     # run linters first
+    emit(task_id, "stage_progress", action="Running linters (ruff / eslint)", node=STAGE)
     lint_output = {}
     for filepath in generated_code:
         lint_result = _run_linter(filepath.lstrip("/"))
@@ -132,6 +137,7 @@ Return a JSON array. Each item must have:
 {{"file": "filepath", "line": null, "severity": "blocking" or "suggestion", "comment": "description"}}
 Only return the JSON array, nothing else."""
 
+    llm = get_llm(task_id=task_id, stage=STAGE, max_tokens=2048)
     response = llm.invoke(prompt)
 
     try:
@@ -145,6 +151,7 @@ Only return the JSON array, nothing else."""
         comments = [{"file": "general", "line": None,
                      "severity": "suggestion", "comment": response.content}]
 
+    emit(task_id, "node_complete", node=STAGE)
     return {
         "review_comments": comments,
         "lint_output": lint_output,

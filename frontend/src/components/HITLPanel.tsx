@@ -14,29 +14,36 @@ type Props = {
     onResume: () => void
 }
 
-const STAGE_LABELS: Record<string, string> = {
-    code_generated: "Review generated code before testing",
-    review_complete: "Code review complete — approve or request changes",
-    testing_complete: "Tests ran — approve PR creation",
-    pr_created: "PR ready — approve deployment",
+// Keyed by the interrupt node name (event.node), which the backend sets
+// reliably from snapshot.next — current_stage collides across checkpoints.
+const NODE_LABELS: Record<string, string> = {
+    hitl_plan: "Review the implementation plan before coding",
+    hitl_code: "Review generated code before testing",
+    hitl_tests: "Tests ran — approve to proceed",
+    hitl_commit: "Approve committing the changes (no push)",
+    hitl_deploy: "Approve deployment",
 }
 
 const CHECKPOINT_MAP: Record<string, string> = {
-    code_generated: "code_review",
-    review_complete: "code_review",
-    testing_complete: "test_review",
-    pr_created: "deploy_gate",
+    hitl_plan: "plan",
+    hitl_code: "code_review",
+    hitl_tests: "test_review",
+    hitl_commit: "commit",
+    hitl_deploy: "deploy_gate",
 }
 
 export default function HITLPanel({taskId, event, onResume}: Props) {
-    const {stage, payload} = event
+    const {node, payload} = event
 
-    const checkpointName = CHECKPOINT_MAP[stage] || "code_review"
+    const checkpointName = CHECKPOINT_MAP[node] || "code_review"
     const generatedCode: Record<string, string> = payload.generated_code || {}
     const originalCode: Record<string, string> = payload.original_code || {}
     const reviewComments: any[] = payload.review_comments || []
     const lintOutput: Record<string, string> = payload.lint_output || {}
     const testResults = payload.test_results || {}
+    const implementationPlan: string = payload.implementation_plan || ""
+    const writtenFiles: string[] = payload.written_files || []
+    const branchName: string = payload.branch_name || ""
 
     const fileNames = Object.keys(generatedCode)
     const [selectedFile, setSelectedFile] = useState<string>(fileNames[0] || "")
@@ -85,14 +92,61 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
           Review required
         </span>
                 <span style={{marginLeft: "auto", fontSize: 12, color: "var(--text-secondary)"}}>
-          {STAGE_LABELS[stage] || stage}
+          {NODE_LABELS[node] || node}
         </span>
             </div>
 
             <div style={{padding: "1.25rem", background: "var(--surface-2)"}}>
 
+                {/* ── IMPLEMENTATION PLAN ── */}
+                {node === "hitl_plan" && (
+                    <div style={{marginBottom: "1.25rem"}}>
+                        <div style={{fontSize: 13, fontWeight: 500, marginBottom: 8, color: "var(--text-secondary)"}}>
+                            Implementation plan
+                        </div>
+                        <pre style={{
+                            fontSize: 12.5, whiteSpace: "pre-wrap", margin: 0,
+                            padding: "0.875rem", borderRadius: "var(--radius)",
+                            background: "var(--surface-1)", border: "0.5px solid var(--border)",
+                            color: "var(--text-primary)", maxHeight: 360, overflowY: "auto",
+                            lineHeight: 1.6
+                        }}>
+              {implementationPlan || "No plan produced."}
+            </pre>
+                        <div style={{fontSize: 12, color: "var(--text-muted)", marginTop: 6}}>
+                            Approve to start coding, or use the feedback box below and choose
+                            “Request changes” to revise the plan.
+                        </div>
+                    </div>
+                )}
+
+                {/* ── COMMIT GATE ── */}
+                {node === "hitl_commit" && (
+                    <div style={{marginBottom: "1.25rem"}}>
+                        <div style={{fontSize: 13, fontWeight: 500, marginBottom: 8, color: "var(--text-secondary)"}}>
+                            Ready to commit to branch{" "}
+                            <span style={{fontFamily: "var(--font-mono)"}}>{branchName}</span>
+                            {" "}(will not push)
+                        </div>
+                        <div style={{
+                            padding: "0.875rem", borderRadius: "var(--radius)",
+                            background: "var(--surface-1)", border: "0.5px solid var(--border)"
+                        }}>
+                            {writtenFiles.length > 0 ? writtenFiles.map(f => (
+                                <div key={f} style={{
+                                    fontSize: 12, fontFamily: "var(--font-mono)",
+                                    color: "var(--text-secondary)"
+                                }}>
+                                    <i className="ti ti-file-code" aria-hidden style={{marginRight: 5}}/>
+                                    {f}
+                                </div>
+                            )) : <span style={{fontSize: 12, color: "var(--text-muted)"}}>No files listed.</span>}
+                        </div>
+                    </div>
+                )}
+
                 {/* ── CODE DIFF PANEL ── */}
-                {stage === "code_generated" && fileNames.length > 0 && (
+                {node === "hitl_code" && fileNames.length > 0 && (
                     <div style={{marginBottom: "1.25rem"}}>
 
                         {/* file tabs */}
@@ -292,20 +346,29 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                 )}
 
                 {/* ── TEST RESULTS ── */}
-                {stage === "testing_complete" && (
+                {node === "hitl_tests" && (() => {
+                    const st = testResults.status
+                    const ran = testResults.ran !== false && (st === "passed" || st === "failed")
+                    const tone = st === "failed" ? "danger" : ran ? "success" : "warning"
+                    const headline =
+                        st === "passed" ? "✅ All tests passed"
+                        : st === "failed" ? "❌ Tests failed"
+                        : st === "no_tests" ? "➖ No tests were collected"
+                        : st === "runner_unavailable" ? "⚠️ Test runner unavailable — tests not run"
+                        : "⚠️ Tests skipped — no runner for the generated tests"
+                    return (
                     <div style={{marginBottom: "1.25rem"}}>
                         <div style={{
                             padding: "0.875rem",
                             borderRadius: "var(--radius)",
-                            background: testResults.passed ? "var(--bg-success)" : "var(--bg-danger)",
-                            borderLeft: `3px solid ${testResults.passed
-                                ? "var(--border-success)" : "var(--border-danger)"}`
+                            background: `var(--bg-${tone})`,
+                            borderLeft: `3px solid var(--border-${tone})`
                         }}>
                             <div style={{
                                 fontSize: 13, fontWeight: 500, marginBottom: 4,
-                                color: testResults.passed ? "var(--text-success)" : "var(--text-danger)"
+                                color: `var(--text-${tone})`
                             }}>
-                                {testResults.passed ? "✅ All tests passed" : "❌ Tests failed"}
+                                {headline}
                             </div>
 
                             {/* test command used */}
@@ -350,10 +413,11 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
               </pre>
                         </div>
                     </div>
-                )}
+                    )
+                })()}
 
                 {/* ── PR LINK ── */}
-                {stage === "pr_created" && payload.pr_url && (
+                {node === "hitl_deploy" && payload.pr_url && (
                     <div style={{marginBottom: "1.25rem"}}>
                         <a
                             href={payload.pr_url}
@@ -405,7 +469,9 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                         }}
                     >
                         <i className="ti ti-check" aria-hidden style={{marginRight: 6}}/>
-                        Approve
+                        {node === "hitl_commit" ? "Approve — commit"
+                            : node === "hitl_deploy" ? "Approve — deploy"
+                                : "Approve"}
                     </button>
 
                     <button
@@ -417,11 +483,14 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                             border: "0.5px solid var(--border-danger)"
                         }}
                     >
-                        <i className="ti ti-refresh" aria-hidden style={{marginRight: 6}}/>
-                        Reject — retry
+                        <i className={`ti ${node === "hitl_commit" || node === "hitl_deploy" ? "ti-x" : "ti-refresh"}`}
+                           aria-hidden style={{marginRight: 6}}/>
+                        {node === "hitl_plan" ? "Request changes"
+                            : node === "hitl_commit" || node === "hitl_deploy" ? "Abort"
+                                : "Reject — retry"}
                     </button>
 
-                    {stage === "code_generated" && (
+                    {node === "hitl_code" && (
                         <button
                             onClick={() => resume("edit")}
                             disabled={submitting || !isEditing}
@@ -437,13 +506,13 @@ export default function HITLPanel({taskId, event, onResume}: Props) {
                         </button>
                     )}
 
-                    {stage === "testing_complete" && !testResults.passed && (
+                    {node === "hitl_tests" && !testResults.passed && (
                         <button
                             onClick={() => resume("override")}
                             disabled={submitting}
                         >
                             <i className="ti ti-alert-triangle" aria-hidden style={{marginRight: 6}}/>
-                            Override — create PR anyway
+                            Override — proceed anyway
                         </button>
                     )}
                 </div>

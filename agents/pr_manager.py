@@ -168,21 +168,26 @@ load_dotenv()
 
 from github import Github, GithubException
 import os
-from tools.local_repo import (
-    git_add_all, git_commit, git_push,
-    git_status
-)
+from events import emit
+from tools.local_repo import git_push
+
+STAGE = "pr_manager"
 
 
 def pr_agent(state: dict) -> dict:
+    task_id = state.get("task_id", "unknown")
+    emit(task_id, "stage_started", action="Pushing branch and opening PR", node=STAGE)
+
     token = os.environ.get("GITHUB_TOKEN")
     repo_name = os.environ.get("GITHUB_REPO")
 
     if not token or not repo_name:
+        emit(task_id, "error", message="GITHUB_TOKEN or GITHUB_REPO not set", node=STAGE)
         return {"error": "GITHUB_TOKEN or GITHUB_REPO not set", "current_stage": "error"}
 
     branch_name = state.get("branch_name")
     if not branch_name:
+        emit(task_id, "error", message="No branch_name in state", node=STAGE)
         return {"error": "No branch_name in state", "current_stage": "error"}
 
     clarified_spec = (
@@ -194,21 +199,11 @@ def pr_agent(state: dict) -> dict:
     test_results = state.get("test_results", {"passed": False, "output": ""})
     written_files = state.get("written_files", [])
 
-    # stage and commit all written files
-    git_add_all()
-    status = git_status()
-
-    if not status.strip():
-        return {"error": "No changes to commit", "current_stage": "error"}
-
-    commit_msg = f"agent: {clarified_spec[:72]}"
-    ok, msg = git_commit(commit_msg)
-    if not ok and "nothing to commit" not in msg:
-        return {"error": f"Commit failed: {msg}", "current_stage": "error"}
-
-    # push branch to remote
+    # the commit already happened in the commit node — just push the branch
+    emit(task_id, "stage_progress", action=f"Pushing {branch_name} to origin", node=STAGE)
     ok, msg = git_push(branch_name)
     if not ok:
+        emit(task_id, "error", message=f"Push failed: {msg}", node=STAGE)
         return {"error": f"Push failed: {msg}", "current_stage": "error"}
 
     # create PR via GitHub API
@@ -220,10 +215,10 @@ def pr_agent(state: dict) -> dict:
 
     try:
         base_branch = os.environ.get("DEFAULT_BRANCH", "main")
-        base = repo.get_branch(base_branch)
+        repo.get_branch(base_branch)          # validate the base branch exists
     except GithubException:
         try:
-            base = repo.get_branch("master")
+            repo.get_branch("master")
             base_branch = "master"
         except GithubException as e:
             return {"error": f"Could not find base branch: {str(e)}", "current_stage": "error"}
@@ -271,8 +266,10 @@ def pr_agent(state: dict) -> dict:
             base=base_branch
         )
     except GithubException as e:
+        emit(task_id, "error", message=f"Could not create PR: {str(e)}", node=STAGE)
         return {"error": f"Could not create PR: {str(e)}", "current_stage": "error"}
 
+    emit(task_id, "node_complete", node=STAGE, action="Pull request created")
     return {
         "pr_url": pr.html_url,
         "current_stage": "pr_created"

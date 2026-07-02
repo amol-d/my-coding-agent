@@ -1,6 +1,40 @@
 from langgraph.types import interrupt
 
 
+def hitl_plan_review(state: dict) -> dict:
+    """Pause for the human to approve, revise, or add input to the plan."""
+    decision = interrupt({
+        "checkpoint": "plan",
+        "stage": "Review the implementation plan before coding",
+        "payload": {"implementation_plan": state.get("implementation_plan", "")},
+        "clarified_spec": state.get("clarified_spec", ""),
+    })
+    return {
+        "hitl_decisions": {**state.get("hitl_decisions", {}),
+                           "plan": decision["action"]},
+        "hitl_feedback": {**state.get("hitl_feedback", {}),
+                          "plan": decision.get("feedback", "")},
+    }
+
+
+def hitl_commit_gate(state: dict) -> dict:
+    """Pause for the human to approve committing the changes (no push happens)."""
+    decision = interrupt({
+        "checkpoint": "commit",
+        "stage": "Approve committing the generated changes",
+        "payload": {
+            "written_files": state.get("written_files", []),
+            "branch_name": state.get("branch_name", ""),
+        },
+    })
+    return {
+        "hitl_decisions": {**state.get("hitl_decisions", {}),
+                           "commit": decision["action"]},
+        "hitl_feedback": {**state.get("hitl_feedback", {}),
+                          "commit": decision.get("feedback", "")},
+    }
+
+
 def hitl_code_review(state: dict) -> dict:
     """Pause here and wait for human to approve/reject/edit the generated code."""
     decision = interrupt({
