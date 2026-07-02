@@ -1,11 +1,13 @@
 import {useState} from "react"
 import {useNavigate} from "react-router-dom"
-import axios from "axios"
 import api from "../api/client"
-// replace all axios.post calls with api.post — same signature
+
 export default function TaskIntake() {
     const [instructions, setInstructions] = useState("")
     const [files, setFiles] = useState<File[]>([])
+    const [figmaLink, setFigmaLink] = useState("")
+    const [createPr, setCreatePr] = useState(false)
+    const [deploy, setDeploy] = useState(false)
     const [loading, setLoading] = useState(false)
     const navigate = useNavigate()
 
@@ -14,10 +16,22 @@ export default function TaskIntake() {
         const form = new FormData()
         form.append("instructions", instructions)
         files.forEach(f => form.append("files", f))
+        form.append("options", JSON.stringify({create_pr: createPr, deploy}))
+        const links = figmaLink.trim() ? [figmaLink.trim()] : []
+        form.append("figma_links", JSON.stringify(links))
 
-        const {data} = await api.post("http://localhost:8000/api/run", form)
-        navigate(`/dashboard/${data.task_id}`)
+        try {
+            const {data} = await api.post("/api/run", form)
+            navigate(`/dashboard/${data.task_id}`)
+        } finally {
+            setLoading(false)
+        }
     }
+
+    const labelStyle = {
+        fontSize: 13, color: "var(--text-secondary)",
+        display: "block", marginBottom: 8
+    } as const
 
     return (
         <div style={{maxWidth: 720, margin: "0 auto", padding: "2rem 1rem"}}>
@@ -26,12 +40,7 @@ export default function TaskIntake() {
             </h1>
 
             <div style={{marginBottom: "1.5rem"}}>
-                <label style={{
-                    fontSize: 13, color: "var(--text-secondary)",
-                    display: "block", marginBottom: 8
-                }}>
-                    Instructions
-                </label>
+                <label style={labelStyle}>Instructions</label>
                 <textarea
                     value={instructions}
                     onChange={e => setInstructions(e.target.value)}
@@ -41,17 +50,15 @@ export default function TaskIntake() {
                 />
             </div>
 
-            <div style={{marginBottom: "2rem"}}>
-                <label style={{
-                    fontSize: 13, color: "var(--text-secondary)",
-                    display: "block", marginBottom: 8
-                }}>
-                    Documents (optional — PRDs, specs, examples)
+            <div style={{marginBottom: "1.5rem"}}>
+                <label style={labelStyle}>
+                    Documents (optional — PRD/BRD PDF or .docx, architecture .md, or a
+                    Figma design screenshot .png/.jpg)
                 </label>
                 <input
                     type="file"
                     multiple
-                    accept=".md,.txt,.pdf,.ts,.py,.js"
+                    accept=".md,.txt,.pdf,.docx,.png,.jpg,.jpeg,.py,.ts,.tsx,.js,.jsx,.json"
                     onChange={e => setFiles(Array.from(e.target.files || []))}
                 />
                 {files.length > 0 && (
@@ -64,6 +71,36 @@ export default function TaskIntake() {
                         ))}
                     </div>
                 )}
+            </div>
+
+            <div style={{marginBottom: "1.5rem"}}>
+                <label style={labelStyle}>Figma link (optional — paste for reference)</label>
+                <input
+                    type="url"
+                    value={figmaLink}
+                    onChange={e => setFigmaLink(e.target.value)}
+                    placeholder="https://www.figma.com/file/..."
+                    style={{width: "100%"}}
+                />
+                <div style={{fontSize: 12, color: "var(--text-muted)", marginTop: 4}}>
+                    For the agent to “see” the design, also upload a screenshot above —
+                    it is interpreted with a vision model.
+                </div>
+            </div>
+
+            <div style={{
+                marginBottom: "2rem", display: "flex", gap: 20, flexWrap: "wrap",
+                padding: "0.875rem 1rem", borderRadius: "var(--radius)",
+                border: "0.5px solid var(--border)", background: "var(--surface-1)"
+            }}>
+                <label style={{fontSize: 13, display: "flex", alignItems: "center", gap: 8, cursor: "pointer"}}>
+                    <input type="checkbox" checked={createPr} onChange={e => setCreatePr(e.target.checked)}/>
+                    Push branch &amp; open PR after commit
+                </label>
+                <label style={{fontSize: 13, display: "flex", alignItems: "center", gap: 8, cursor: "pointer"}}>
+                    <input type="checkbox" checked={deploy} onChange={e => setDeploy(e.target.checked)}/>
+                    Deploy after commit
+                </label>
             </div>
 
             <button onClick={handleSubmit} disabled={!instructions || loading}>
