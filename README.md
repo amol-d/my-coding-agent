@@ -48,8 +48,9 @@ Every `hitl_*` node pauses for a human decision (approve / reject / edit / abort
   **token/cost tracking** with an optional per-run budget cap.
 - **Intent-driven git** — natural-language directives ("push the current branch and open a PR
   to dev") drive pushes/PRs directly, overriding the UI toggles.
-- **Doc ingestion** — PRD/BRD as PDF/DOCX, architecture markdown (RAG-indexed), and Figma
-  **screenshots** interpreted by a vision model.
+- **Convention-aware** — reads the target repo's own `AGENTS.md` / `CLAUDE.md` for
+  architecture context (falling back to optional RAG over `arch_docs/` for a large external
+  corpus), plus PRD/BRD as PDF/DOCX and Figma **screenshots** interpreted by a vision model.
 - **Security** — JWT auth (API + WebSocket), constant-time credentials, and a path-traversal
   guard confining all file writes to the target repo.
 
@@ -101,4 +102,4 @@ npm run build            # tsc + vite build
 ## Tech stack
 
 FastAPI · LangGraph (with SQLite checkpointing) · LangChain + OpenAI (chat + vision) ·
-Chroma (RAG over architecture docs) · PyGithub · React 19 + Vite + TypeScript.
+Chroma (optional RAG fallback over `arch_docs/`) · PyGithub · React 19 + Vite + TypeScript.

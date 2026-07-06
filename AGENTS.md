@@ -44,7 +44,8 @@ ingest → plan → hitl_plan ─approved→ coding → review → hitl_code ─
   (`create_pr`, `deploy`, `create_new_branch`) that override the UI toggles. Pure
   `git_ops` requests (e.g. "push the current branch and open a PR") skip code generation
   and route straight to a confirmation gate + `pr_manager`. Otherwise it consolidates raw
-  instructions + parsed docs/design-image descriptions + Figma links + RAG arch context
+  instructions + parsed docs/design-image descriptions + Figma links + the target repo's
+  `AGENTS.md`/`CLAUDE.md` guidance (see `arch_rag`)
   into one `clarified_spec`.
 - **`hitl_git_ops`** ([`hitl/checkpoints.py`](hitl/checkpoints.py)) — confirmation gate for
   the git-ops fast path before any push/PR.
@@ -134,8 +135,15 @@ ingest → plan → hitl_plan ─approved→ coding → review → hitl_code ─
     Worktree commits land in the shared object DB, so the branch + commits **persist in the
     main repo after the worktree is removed** (`_cleanup_worktree` in `main.py`, called only
     on terminal states — never on a HITL pause).
-- [`arch_rag/`](arch_rag/) — RAG over `./arch_docs/*.md`. `ingest.py` chunks and embeds
-  into a persistent Chroma store (`./chroma_db`); `retriever.py` does similarity search.
+- [`arch_rag/`](arch_rag/) — convention/architecture context for the agents.
+  `retriever.get_arch_context` sources it **primarily from the target repo's own
+  `AGENTS.md` / `CLAUDE.md`** (root or under `.claude/`; `get_repo_guidelines`, read via
+  `tools/local_repo`, so it's always current for that repo — the same way Codex / Claude
+  Code work; identical content found in two locations is de-duplicated). It falls back to
+  **semantic retrieval over `./arch_docs/*.md`** (Chroma; built one-time by `ingest.py`) only
+  when the target repo has no guidance files, so a large external corpus is still supported
+  but never required. Chroma/embeddings are imported lazily, so the common path pulls in
+  neither.
 - [`auth.py`](auth.py) — JWT bearer auth with a single admin user from env vars.
   Credentials are checked in constant time (`verify_credentials`); `decode_token` is a
   non-raising validator used for the WebSocket handshake (which authenticates via a
